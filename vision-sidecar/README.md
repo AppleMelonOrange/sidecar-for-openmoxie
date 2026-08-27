@@ -207,15 +207,20 @@ launchctl bootout gui/$(id -u)/com.openmoxie.vision-sidecar
 rm ~/Library/LaunchAgents/com.openmoxie.vision-sidecar.plist
 ```
 
-## Credits
+## Credits & how this is maintained
 
-Built with **Claude (Anthropic)** and **Grok (xAI)**, directed, tested, and
-maintained by the repository owner. Grok did much of the firmware disassembly and
-research that mapped the camera gate; Claude did the design, integration, and
-packaging. The camera-enable path was **verified live on a real Moxie** (A/B-tested)
-and ships with a test suite. This is community work on a discontinued device, on the
-owner's own hardware — **not** reverse engineering, **not** firmware modification,
-and **not** a fork of OpenMoxie. Issues and PRs are answered by the maintainer.
+Built with **Claude (Anthropic)** and **Grok (xAI)**. Grok did much of the firmware
+disassembly and research that mapped the camera gate; Claude did the design,
+**coding**, integration, and packaging. The camera-enable path was **A/B-proven live
+on a real Moxie** and ships with a test suite.
+
+The repository owner is **not a programmer** — they set the goals, test on the real
+robot, and publish; they don't hand-write the code. **Support here is AI-assisted:**
+replies to issues and PRs are worked through with Claude. Please include **logs and
+exact steps** in issues — precise reports are what make the AI-assisted debugging work.
+
+Community work on a discontinued device, on the owner's own hardware — **not** reverse
+engineering, **not** firmware modification, and **not** a fork of OpenMoxie.
 
 ## Tests (no live broker, no live Django DB)
 
