@@ -1,0 +1,56 @@
+# docker-compose.vision.yml — overlay that adds the vision-sidecar add-on to a
+# Docker-based OpenMoxie (which already ships mqtt + server services).
+#
+# ─── ONE-COMMAND INSTALL (Docker) ────────────────────────────────────────────
+#   1. Put this add-on's folder at your OpenMoxie repo root as  ./vision-sidecar
+#      (the overlay references ./vision-sidecar and ./local/work relative to it).
+#   2. From that repo root:
+#
+#        docker compose -f docker-compose.yml \
+#                       -f vision-sidecar/docker-compose.vision.yml up -d --build
+#
+# It adds two services:
+#   • vision-config  — a ONE-SHOT that writes data_sharing="full" + the image-
+#     captioning props into OpenMoxie's DB. It reuses OpenMoxie's own server image
+#     and the same ./local/work DB volume, so it runs the config in Django's real
+#     environment. Exits when done.
+#   • vision-sidecar — the long-running gate-opener. Talks to the `mqtt` broker
+#     service; restarts unless stopped.
+#
+# ─── NOTHING HIDDEN ──────────────────────────────────────────────────────────
+#   No OpenMoxie source file is edited; this is purely additive compose services.
+#   To remove:  docker compose ... down  (and delete this overlay file).
+#
+# ─── HONEST STATUS ───────────────────────────────────────────────────────────
+#   The native install.sh path is the one verified live. This Docker overlay is
+#   provided for OpenMoxie's Docker users and is NOT yet verified end-to-end by
+#   the authors — please open an issue with what you see. Known nuance: `vision-
+#   config` may start before `server` finishes its first-run DB migrations
+#   (compose `depends_on` waits for container start, not readiness). If it errors
+#   the first time, just re-run only that one-shot once the server is up:
+#
+#        docker compose -f docker-compose.yml \
+#          -f vision-sidecar/docker-compose.vision.yml run --rm vision-config
+#
+services:
+  vision-config:
+    image: openmoxie/openmoxie-server:${OPENMOXIE_VERSION:-latest}
+    depends_on:
+      - server
+    volumes:
+      - ./local/work:/app/site/work          # the SQLite DB, same mount as `server`
+      - ./vision-sidecar:/app/vision-sidecar  # our config script + protos
+    working_dir: /app
+    environment:
+      - DJANGO_SETTINGS_MODULE=openmoxie.settings
+    command: python vision-sidecar/apply_vision_config.py --site-dir /app/site
+    restart: "no"
+
+  vision-sidecar:
+    build: ./vision-sidecar
+    depends_on:
+      - mqtt
+    environment:
+      - VISION_SIDECAR_BROKER_HOST=mqtt
+      - VISION_SIDECAR_BROKER_PORT=8883
+    restart: unless-stopped

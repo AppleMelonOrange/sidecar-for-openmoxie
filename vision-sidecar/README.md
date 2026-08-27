@@ -1,0 +1,229 @@
+# vision-sidecar — additive image-captioning gate for stock OpenMoxie
+
+An independent process that runs **beside** an unpatched OpenMoxie install and
+opens the robot's **already-shipped** camera / image-captioning path. No
+OpenMoxie source file is edited. The robot stays on **stock, signed firmware**.
+
+This is community work around a discontinued device, on the **owner's own
+hardware**, at the network/backend layer. It is **not** reverse engineering,
+**not** firmware modification, and **not** a fork of OpenMoxie.
+
+**Status: proven and in use.** The arm path was verified on-robot (A/B test:
+the in-core arm senders disabled, this sidecar the only thing arming — the
+robot booted with the capture gate closed and camera frames streamed once
+the sidecar armed it). It now runs as a managed service and has replaced the
+in-core arming on the author's own install. One honest caveat remains: the
+sidecar's `client-service-http-token` reply was **not** isolated in that test
+(the stock server still answered the token request), so whether the token
+reply is required — and whether this sidecar's version of it is correct — is
+unverified standalone. If a fully-stock install sees no frames, that reply is
+the first thing to suspect. See **Open questions** below.
+
+## What it does
+
+Three cooperating pieces, all additive:
+
+1. **`apply_vision_config.py`** — one-shot write to the Django
+   `HiveConfiguration(name='default')` row: `data_sharing="full"` plus props
+   `image_captioning="1"`, `ic_by_rb="1"`, `gcp_upload_disable="0"`. That row
+   is the substitute for editing `DEFAULT_ROBOT_CONFIG` /
+   `DEFAULT_ROBOT_SETTINGS` in `site/hive/mqtt/robot_data.py`. The merge is
+   additive (existing keys are preserved). See the script's header comment
+   for why: `build_config()` uses the row **wholesale**.
+2. **`vision_sidecar.py`** — MQTT client on the same broker as OpenMoxie.
+   It arms a robot from **two** triggers: a mosquitto `$SYS/broker/log/#`
+   connect line (fresh boot), **and** any message on `/devices/+/events/#`
+   (a live robot emits events constantly). The event trigger is essential —
+   the `$SYS` connect line only fires on a *new* broker session, so a
+   sidecar that starts while the robot is already connected, or a robot that
+   **wakes from suspend** (its MQTT session survives, no new connect line),
+   would never be armed by the connect trigger alone. On either trigger it
+   publishes the two arm protos (`LoggingStateUpdate` then `EnableICModule`)
+   to `/devices/{id}/commands/zmq` (10s per-device debounce). Optionally
+   answers `client-service-http-token` with a dummy token.
+3. **LaunchAgent template** — keep the sidecar up across logins.
+
+DNS redirect of `production-ic-worker.embodied.com` (and friends) to a local
+caption server is **out of scope of this package**. The robot still POSTs
+JPEGs to that vendor hostname; something else (router DNS + the existing
+caption server on :443) has to answer. This sidecar only opens the firmware
+gate that makes those POSTs happen.
+
+## Prerequisites
+
+- A running OpenMoxie (Django + local mosquitto). Default broker:
+  `localhost:8883`. OpenMoxie's mosquitto has a **TLS listener** on 8883, so
+  this sidecar connects **over TLS** with `tls_set(cert_reqs=CERT_NONE)` +
+  `tls_insecure_set(True)` — encrypt, don't verify the self-signed cert,
+  mirroring OpenMoxie's own client. (A plaintext connect hangs with no
+  CONNACK.) Auth is **anonymous** first, then username `unknown` with no
+  password. If the broker ACL rejects both, add an operator user that can:
+  - read `$SYS/broker/log/#`
+  - read `/devices/+/events/#` (only if http-token replies stay enabled)
+  - write `/devices/+/commands/#`
+- Python venv with **paho-mqtt** and **protobuf** (the OpenMoxie venv
+  already has both).
+- The caption-server / DNS pieces above, if you actually want frames.
+
+## Quick install (one command)
+
+```bash
+./install.sh                       # if your OpenMoxie is at ~/openmoxie
+./install.sh /path/to/openmoxie    # otherwise
+```
+
+`install.sh` is fully commented — open it first; it does nothing hidden and never
+uses sudo. It checks the venv deps, applies the DB config (step 1 below), and
+installs + starts a **user** LaunchAgent running the sidecar (steps 2–3 below).
+Idempotent, so it's safe to re-run. **Uninstall:** `./uninstall.sh` (see below).
+
+> This installs the **gate-opener only**. To actually *see* descriptions you still
+> need the DNS redirect + caption server (see Prerequisites above).
+
+## Install with Docker (if you run OpenMoxie in Docker)
+
+OpenMoxie ships a `docker compose` setup (`mqtt` + `server`). This add-on includes
+an **overlay** that plugs into it. Put this folder at your OpenMoxie repo root as
+`./vision-sidecar`, then from that root run **one command**:
+
+```bash
+docker compose -f docker-compose.yml \
+               -f vision-sidecar/docker-compose.vision.yml up -d --build
+```
+
+That adds two services: a one-shot `vision-config` (writes the DB config using
+OpenMoxie's own server image + DB volume) and the long-running `vision-sidecar`
+(talks to the `mqtt` broker service). Remove with `docker compose ... down`.
+Nothing hidden — read `docker-compose.vision.yml`; it edits no OpenMoxie source.
+
+> **Status — Docker path mechanics verified.** In an isolated Docker test the image
+> builds, this overlay **merges cleanly** with OpenMoxie's base compose, and the
+> containerized sidecar **connects to OpenMoxie's TLS broker and arms on a device
+> event** (publishes the two protos). Not yet confirmed end-to-end by the authors:
+> the `vision-config` one-shot writing to a live server DB, and real frames from an
+> actual robot — that full path is proven on the **native** install. If you run this
+> on Docker OpenMoxie, please open an issue with what you see. One known nuance (and
+> its fix) is documented at the top of `docker-compose.vision.yml`.
+
+## Install / run — manual (exactly what `install.sh` automates)
+
+From the OpenMoxie repo root (or this add-on sitting next to a clone).
+
+### 1. Apply the DB-row config (once; idempotent)
+
+Settings module is `openmoxie.settings` (same bootstrap as `site/load_see.py`).
+`--site-dir` must point at the **live** OpenMoxie `site/` that owns the
+SQLite DB, which may not be this worktree.
+
+```bash
+DJANGO_SETTINGS_MODULE=openmoxie.settings \
+  /path/to/openmoxie/venv/bin/python vision-sidecar/apply_vision_config.py \
+  --site-dir /path/to/openmoxie/site
+```
+
+It prints pretty-JSON before/after of `common_config` and `common_settings`,
+then saves. A second run prints the same and says `Unchanged (idempotent)`.
+
+A robot already connected will pick the new config up on its **next** config
+fetch (typically the next MQTT connect / session). This script does not
+push `/config` itself.
+
+### 2. Run the sidecar
+
+```bash
+/path/to/openmoxie/venv/bin/python vision-sidecar/vision_sidecar.py \
+  --broker-host localhost \
+  --broker-port 8883
+```
+
+Flags (each has an env fallback):
+
+| flag | env | default |
+|---|---|---|
+| `--broker-host` | `VISION_SIDECAR_BROKER_HOST` | `localhost` |
+| `--broker-port` | `VISION_SIDECAR_BROKER_PORT` | `8883` |
+| `--http-token` / `--no-http-token` | `VISION_SIDECAR_HTTP_TOKEN` | on |
+| `--resend-interval` seconds | `VISION_SIDECAR_RESEND_INTERVAL` | `0` (no periodic resend; still arms on connect + event triggers) |
+
+`--resend-interval > 0` also re-sends the two arm protos every N seconds to
+every device that has been armed at least once, as a safety net if a
+broker-log connect line is missed. That path ignores the 10s connect debounce.
+
+Logs to stdout:
+
+- `VISION-ARM dev=<device_id> sent 2 protos`
+- `VISION-HTTP-TOKEN dev=<device_id>`
+
+### 3. Optional: user LaunchAgent
+
+`com.openmoxie.vision-sidecar.plist` is a **template**. `@HOME@` is a
+placeholder so the file is safe to publish. Substitute it, and fix the clone
+path if it is not `$HOME/openmoxie`:
+
+```bash
+sed "s|@HOME@|$HOME|g" vision-sidecar/com.openmoxie.vision-sidecar.plist \
+  > ~/Library/LaunchAgents/com.openmoxie.vision-sidecar.plist
+# edit the plist if your clone is not $HOME/openmoxie
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.openmoxie.vision-sidecar.plist
+```
+
+This is a **user** LaunchAgent, not the root caption daemon. Do not
+`sudo launchctl` it, and do not `launchctl kickstart` the OpenMoxie web
+server as part of this install (that breaks the robot's STT handshake).
+
+## Open questions (not yet isolation-tested)
+
+The arm path is proven (see **Status**). These two remain, and want a run on
+**fully stock** OpenMoxie (no core patch at all) plus this sidecar:
+
+**(a)** Is the http-token reply actually required, or is the robot's
+captioning path tolerant of it being absent? The A/B did not isolate this —
+the stock server answered the token during the test. (`--no-http-token` vs
+default on, with core `_PROVIDE_HTTP_TOKENS` off.)
+
+**(b)** Is `data_sharing="full"` alone sufficient without the two arm
+protos, or are the protos load-bearing? (Run apply_vision_config only,
+leave the sidecar off — vs both.)
+
+Neither blocks use: the full stack (sidecar arming + token on + config) is
+proven to stream frames. These would just find the *minimal* stack.
+
+## Uninstall / rollback
+
+```bash
+./uninstall.sh                       # stop + remove the LaunchAgent
+./uninstall.sh --show-config-revert  # also print how to clear the DB config
+```
+
+The uninstaller stops and removes the user LaunchAgent, so the sidecar no longer
+runs and the camera gate is no longer armed. The DB config is left in place by
+default — it is **inert** without the sidecar (nothing arms the gate). No sudo, and
+no OpenMoxie source is touched.
+
+**By hand**, if you prefer:
+
+```bash
+launchctl bootout gui/$(id -u)/com.openmoxie.vision-sidecar
+rm ~/Library/LaunchAgents/com.openmoxie.vision-sidecar.plist
+```
+
+## Credits
+
+Built with **Claude (Anthropic)** and **Grok (xAI)**, directed, tested, and
+maintained by the repository owner. Grok did much of the firmware disassembly and
+research that mapped the camera gate; Claude did the design, integration, and
+packaging. The camera-enable path was **verified live on a real Moxie** (A/B-tested)
+and ships with a test suite. This is community work on a discontinued device, on the
+owner's own hardware — **not** reverse engineering, **not** firmware modification,
+and **not** a fork of OpenMoxie. Issues and PRs are answered by the maintainer.
+
+## Tests (no live broker, no live Django DB)
+
+`pytest` is not required. From the repo root:
+
+```bash
+/path/to/openmoxie/venv/bin/python -m unittest vision-sidecar/test_vision_sidecar.py -v
+```
+
+(If pytest is installed in the venv, `python -m pytest vision-sidecar/test_vision_sidecar.py -v`
+also collects these tests.)
