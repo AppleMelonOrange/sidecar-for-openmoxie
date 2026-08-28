@@ -8,6 +8,13 @@ This is community work around a discontinued device, on the **owner's own
 hardware**, at the network/backend layer. It is **not** reverse engineering,
 **not** firmware modification, and **not** a fork of OpenMoxie.
 
+> ⚠️ **Installed before 2026-08-28? Please update.** An earlier version re-sent the
+> "arm" messages repeatedly (a timer / re-arming every few seconds). On some robots
+> that floods the audio subsystem and triggers **full system reboots** (the boot logo
+> cycles). **Fix:** `git pull` and re-run `./install.sh` (or set `--resend-interval 0`
+> and remove any resend from your LaunchAgent). The current version arms **once per
+> connection** and is safe — see "Arming safely" below.
+
 ### This add-on is ONE part of a stack
 
 It opens the camera gate — *seeing* also needs a DNS redirect, a caption server, and a
@@ -97,7 +104,9 @@ Three cooperating pieces, all additive:
    **wakes from suspend** (its MQTT session survives, no new connect line),
    would never be armed by the connect trigger alone. On either trigger it
    publishes the two arm protos (`LoggingStateUpdate` then `EnableICModule`)
-   to `/devices/{id}/commands/zmq` (10s per-device debounce). Optionally
+   to `/devices/{id}/commands/zmq` **once per connection** — a broker-log
+   disconnect clears the flag so the next boot arms exactly once, never as a
+   heartbeat (see "Arming safely"). Optionally
    answers `client-service-http-token` with a dummy token.
 3. **LaunchAgent template** — keep the sidecar up across logins.
 
@@ -203,11 +212,19 @@ Flags (each has an env fallback):
 | `--broker-host` | `VISION_SIDECAR_BROKER_HOST` | `localhost` |
 | `--broker-port` | `VISION_SIDECAR_BROKER_PORT` | `8883` |
 | `--http-token` / `--no-http-token` | `VISION_SIDECAR_HTTP_TOKEN` | on |
-| `--resend-interval` seconds | `VISION_SIDECAR_RESEND_INTERVAL` | `0` (no periodic resend; still arms on connect + event triggers) |
+| `--resend-interval` seconds | `VISION_SIDECAR_RESEND_INTERVAL` | `0` — ⚠️ **leave at 0**, see "Arming safely" |
 
-`--resend-interval > 0` also re-sends the two arm protos every N seconds to
-every device that has been armed at least once, as a safety net if a
-broker-log connect line is missed. That path ignores the 10s connect debounce.
+### Arming safely — never resend on a timer
+
+⚠️ **Leave `--resend-interval` at `0` (the default), and don't add a resend to your
+LaunchAgent.** The arm messages are **events** — the robot needs them **once per
+connection**, not as a heartbeat. Setting `--resend-interval > 0` re-sends
+`LoggingStateUpdate` + `EnableICModule` every N seconds; on some robots that flood
+**crash-loops the audio subsystem and triggers full system reboots** (boot logo
+cycling). This happened on a real robot (Aug 2026) and is why the default never sets
+it. The current sidecar arms each device **once per connection** (a broker-log
+disconnect clears the flag, so the next boot arms exactly once). Only touch this flag
+if you truly know why.
 
 Logs to stdout:
 
