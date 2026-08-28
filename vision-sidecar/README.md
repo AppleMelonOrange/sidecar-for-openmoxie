@@ -267,6 +267,13 @@ launchctl bootout gui/$(id -u)/com.openmoxie.vision-sidecar
 rm ~/Library/LaunchAgents/com.openmoxie.vision-sidecar.plist
 ```
 
+## Discussion
+
+Community discussion of this vision enabler on **r/MoxieRobot**:
+
+- https://www.reddit.com/r/MoxieRobot/s/EQ8idhy9WS
+- https://www.reddit.com/r/MoxieRobot/s/V2BJKUBuYt
+
 ## Credits & how this is maintained
 
 Built by three AI models, directed by the repository owner: **Claude Opus 4.8** and

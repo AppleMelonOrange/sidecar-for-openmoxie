@@ -34,13 +34,6 @@ want, independently. **Start at the add-on's own folder**, e.g.
 OpenMoxie (not a fork), how it stays **privacy-first**, and how add-ons combine into a
 working feature.
 
-## Discussion
-
-Community discussion on **r/MoxieRobot**:
-
-- https://www.reddit.com/r/MoxieRobot/s/EQ8idhy9WS
-- https://www.reddit.com/r/MoxieRobot/s/V2BJKUBuYt
-
 ## Credits & how this is maintained
 
 Built by three AI models, directed by the repository owner:
