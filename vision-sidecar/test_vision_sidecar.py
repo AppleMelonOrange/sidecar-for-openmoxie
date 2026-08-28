@@ -233,6 +233,40 @@ class TestHttpTokenReply(unittest.TestCase):
         sidecar.handle_message(FakeMsg(evt, '{}'))
         self.assertEqual(len(fake.published), 4)
 
+    def test_wake_transition_rearms_once(self):
+        """Sleep closes the capture gate (2026-08-28 live: blind after nap).
+        PowerState transition INTO RUNNING = one re-arm. First-seen frame
+        never wake-arms; sleep-entry never arms; repeat RUNNING never arms."""
+        def ps(state, prev=0):
+            body = bytes([0x08, 0x01, 0x10, state, 0x18, prev])
+            return vs.POWERSTATE_PREFIX + body
+        fake = FakeClient()
+        clock = {'t': 100.0}
+        sidecar = vs.VisionSidecar(
+            client=fake, http_token_enabled=False,
+            debounce_s=10.0, time_fn=lambda: clock['t'],
+        )
+        zmq_topic = f'/devices/{SYNTH_DEVICE_ID}/events/zmq'
+        # first frame: RUNNING — discovery arm fires (unarmed device), but
+        # NO wake arm (prev unknown): exactly 2 protos
+        sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
+        self.assertEqual(len(fake.published), 2)
+        # robot goes to sleep: no arm
+        clock['t'] = 200.0
+        sidecar.handle_message(FakeMsg(zmq_topic, ps(5)))
+        self.assertEqual(len(fake.published), 2)
+        # WAKE: SUSPEND -> RUNNING => exactly one re-arm (2 protos)
+        clock['t'] = 300.0
+        sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
+        self.assertEqual(len(fake.published), 4)
+        # steady RUNNING frames: nothing
+        clock['t'] = 400.0
+        sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
+        self.assertEqual(len(fake.published), 4)
+        # parser: non-powerstate zmq payload is ignored quietly
+        sidecar.handle_message(FakeMsg(zmq_topic, b'embodied.other.ThingPB:\x08\x01'))
+        self.assertEqual(len(fake.published), 4)
+
 
 class TestMergeVisionConfig(unittest.TestCase):
     """Pure-function tests of apply_vision_config.merge — no Django."""

@@ -74,6 +74,48 @@ DISCONNECT_PATTERN = r"Client (d_[a-f0-9-]+) (closed its connection|disconnected
 ARM_DEBOUNCE_S = 10.0
 DEFAULT_HTTP_TOKEN = 'notoken'
 
+# PowerStatePB rides the same /devices/{id}/events/zmq stream the sidecar
+# already subscribes to, framed "full.proto.name:" + bytes. Wire (firmware
+# dig, corrected 2026-08-26): field 1 = timestamp varint, field 2 = state
+# varint (1 Config, 2 Startup, 3 RUNNING, 4 LIGHT_SLEEP, 5 SUSPEND),
+# field 3 = prev_state varint.
+POWERSTATE_PREFIX = b'embodied.power.PowerStatePB:'
+POWER_RUNNING = 3
+
+
+def parse_powerstate_state(payload):
+    """Return PowerStatePB.state (field 2) from a zmq event payload, or None.
+
+    Minimal defensive varint walk — all three fields are wiretype-0
+    varints; anything unexpected returns None. Never raises.
+    """
+    try:
+        if not payload.startswith(POWERSTATE_PREFIX):
+            return None
+        buf = payload[len(POWERSTATE_PREFIX):]
+        i, n = 0, len(buf)
+        while i < n:
+            tag = buf[i]
+            i += 1
+            field, wt = tag >> 3, tag & 7
+            if wt != 0:
+                return None
+            val, shift = 0, 0
+            while i < n:
+                b = buf[i]
+                i += 1
+                val |= (b & 0x7F) << shift
+                if not (b & 0x80):
+                    break
+                shift += 7
+            else:
+                return None
+            if field == 2:
+                return val
+        return None
+    except Exception:
+        return None
+
 # Exact JSON object core publishes via send_command_to_bot_json.
 # json.dumps preserves insertion order (Py3.7+); do NOT sort_keys — the wire
 # shape is this dumps() result as a str, matching core byte-for-byte in intent.
@@ -187,6 +229,13 @@ class VisionSidecar:
         self._http_token_last = {}
         # Armed-at-least-once set: resend-interval walks this, independent of debounce.
         self._armed_devices = set()
+        # Last PowerStatePB.state per device (3=RUNNING, 4=LIGHT_SLEEP,
+        # 5=SUSPEND). Sleep CLOSES the capture gate (observed live
+        # 2026-08-28: wake-from-sleep left the camera blind — same MQTT
+        # session, no connect line, device still latched-armed). A
+        # transition INTO RUNNING is a WAKE EVENT and triggers exactly one
+        # re-arm. Event, not heartbeat.
+        self._power_state = {}
         self._tried_unknown_user = False
         self._stop = threading.Event()
 
@@ -334,6 +383,22 @@ class VisionSidecar:
             # seconds before the first event — the debounce must not
             # swallow the one arm that latches.
             self.send_arm_protos(device_id, ignore_debounce=True, latch=True)
+        # WAKE detection: sleep closes the capture gate; a PowerState
+        # transition INTO RUNNING is the one-shot re-arm trigger. First
+        # frame ever seen (prev None) never arms — the discovery arm above
+        # owns that case.
+        if eventname == 'zmq' and device_id and device_id.startswith('d_'):
+            try:
+                raw = msg.payload if isinstance(msg.payload, (bytes, bytearray)) else bytes(str(msg.payload), 'utf-8')
+                state = parse_powerstate_state(bytes(raw))
+                if state is not None:
+                    prev = self._power_state.get(device_id)
+                    self._power_state[device_id] = state
+                    if state == POWER_RUNNING and prev is not None and prev != POWER_RUNNING:
+                        logger.info('VISION-WAKE dev=%s power %s->RUNNING; re-arming once', device_id, prev)
+                        self.send_arm_protos(device_id, ignore_debounce=True, latch=True)
+            except Exception:
+                logger.exception('powerstate wake check failed (ignored)')
         # Incoming JSON body is irrelevant for this branch — core does not read it.
         if not self.http_token_enabled:
             return

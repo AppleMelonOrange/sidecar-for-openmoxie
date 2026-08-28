@@ -207,13 +207,19 @@ Flags (each has an env fallback):
 | `--http-token` / `--no-http-token` | `VISION_SIDECAR_HTTP_TOKEN` | on |
 | `--resend-interval` seconds | `VISION_SIDECAR_RESEND_INTERVAL` | `0` (leave at 0 — see note below) |
 
-**Arming happens at most twice per connection — leave `--resend-interval` at `0`.** The
-arm messages are events, not a heartbeat. Boot sequence: a **best-effort** arm fires the
-moment the robot connects, and the **latching** arm fires on the device's **first
-perception event** (events flowing proves the vision subsystem is up and listening) — so
-**at most 2 arms per connection**. A broker-log disconnect clears the flag, so the next
-boot starts fresh. Setting `--resend-interval > 0` re-sends the arm protos on a timer,
-which can overload the robot's audio subsystem — so don't.
+**Arming is event-driven — leave `--resend-interval` at `0`.** The arm messages are
+events, never a heartbeat. There are three triggers, each firing **at most once**:
+
+1. **Connect** — a *best-effort* arm the moment the robot connects.
+2. **First perception event** — the *latching* arm, once the vision subsystem is up and
+   sending events (this is what proves it's actually listening).
+3. **Wake from sleep** — one re-arm when the robot transitions back to `RUNNING`. Sleep
+   closes the capture gate, and a wake keeps the same MQTT session (no new connect), so
+   without this the robot would wake **blind**.
+
+Together these cover boot, already-connected, and wake-from-nap. A broker-log disconnect
+resets the state for the next connection. Setting `--resend-interval > 0` re-sends the
+arm protos on a timer, which can overload the robot's audio subsystem — so don't.
 
 Logs to stdout:
 
