@@ -4,8 +4,10 @@
 
 Embodied shut down and took Moxie's cloud with it. `OpenMoxie` (jbeghtol/openmoxie)
 revived the core — it speaks the robot's protocol and runs chat + speech-to-text
-locally — but deliberately leaves the heavier, data-sensitive capabilities dormant,
-the **camera** most of all. These add-ons turn those on.
+locally — a huge amount of careful work that everything here builds on. It focuses on
+that core experience; some of the firmware's heavier, data-sensitive capabilities —
+the **camera** most of all — sit outside its scope. These add-ons extend OpenMoxie to
+enable them.
 
 ## The decision: an add-on layer, not a fork
 

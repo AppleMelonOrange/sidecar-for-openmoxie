@@ -46,8 +46,8 @@ Community discussion on **r/MoxieRobot**:
 Built by three AI models, directed by the repository owner:
 **Claude Opus 4.8** and **Claude Fable 5** (Anthropic), and **Grok 4.6** (xAI). All
 three **wrote code**; Grok also did much of the **firmware disassembly** and the
-research that mapped the robot's dormant capabilities. The work was **verified live on
-a real Moxie**.
+research that mapped what the robot's firmware already contains. The work was
+**verified live on a real Moxie**.
 
 The repository owner is **not a programmer** — they set the goals, test on the real
 robot, and publish; they don't hand-write the code. **Support here is AI-assisted:**

@@ -11,7 +11,26 @@ hardware**, at the network/backend layer. It is **not** reverse engineering,
 ### This add-on is ONE part of a stack
 
 It opens the camera gate — *seeing* also needs a DNS redirect, a caption server, and a
-vision model. The full path a "Moxie, what do you see?" request travels:
+vision model.
+
+**In plain terms (non-developer).** Getting Moxie to describe what it sees takes three
+things on your side:
+
+1. **Install this add-on** — one command (`./install.sh`); it switches Moxie's camera on.
+2. **Point Moxie's photos to your computer** — one setting on your home router (a *DNS
+   redirect*): send `production-ic-worker.embodied.com` to your computer's address. Moxie
+   posts each camera photo to that name, so this makes the photos arrive at your computer
+   instead of the shut-down company servers.
+3. **Run a small "caption server" on your computer** — it catches each photo, **saves it
+   to a folder so you can open and see what Moxie saw**, and returns a short description
+   that Moxie speaks. *(This piece is coming as its own add-on; until then the step-by-step
+   below shows how to run one.)*
+
+**Where the photos are saved:** the caption server writes each incoming photo to a
+`frames/` folder (e.g. `frames/frame_*.jpg`) — open it any time to browse the stills Moxie
+captured. They're small (320×180), roughly one per second while Moxie is awake and engaged.
+
+**For developers — the full path** a "Moxie, what do you see?" request travels:
 
 ```mermaid
 flowchart TD
