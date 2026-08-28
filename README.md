@@ -21,6 +21,47 @@ modification.
 Each add-on is a **self-contained folder** with its own README and one-command
 installer — use whichever you want, independently.
 
+## The vision stack — this add-on is one part
+
+Enabling *"Moxie, what do you see?"* takes a **stack** of parts. `vision-sidecar` is
+just the one that **opens the camera gate**. Here is the full path a request travels,
+and who provides each piece:
+
+```mermaid
+flowchart TD
+    Q["You ask: Moxie, what do you see?"]
+    R["1. Moxie robot (fw 24.10.803, relocated)"]
+    O["2. OpenMoxie (Django + mosquitto)"]
+    S["3. vision-sidecar (THIS repo): opens the camera gate"]
+    N["4. Your router: DNS redirect"]
+    C["5. Caption server on 443 (you run)"]
+    V["6. Vision model / VLM (you run, local)"]
+    Q --> R
+    R -->|MQTT chat and config| O
+    S -->|arm protos| O
+    R -->|camera JPEG| N
+    N --> C
+    C -->|JPEG| V
+    V -->|description| C
+    C -->|description| O
+    O -->|Moxie speaks it| R
+```
+
+| # | Part | Who provides it |
+|---|---|---|
+| 1 | **Moxie robot** (fw 803, relocated) | your robot |
+| 2 | **OpenMoxie** (Django + mosquitto) | upstream `jbeghtol/openmoxie` |
+| 3 | **vision-sidecar** — opens the camera gate | **THIS repo** |
+| 4 | **Router DNS redirect** | you (one router rule) |
+| 5 | **Caption server** (`:443`) | you (not yet packaged here) |
+| 6 | **Vision model / VLM** | you (any local or cloud VLM) |
+| 7 | **Chat glue** (speak the answer) | you (a small OpenMoxie module) |
+
+Only **#3** is this add-on. The full step-by-step (and why it works) is in
+[docs/enable-vision-step-by-step.md](docs/enable-vision-step-by-step.md). *(The diagram
+renders as a flowchart in GitHub's normal view; if you see raw text you're looking at
+the raw file.)*
+
 ## Common prerequisites (all add-ons)
 
 - A Moxie on firmware **24.10.803**, already **relocated to OpenMoxie** (the
@@ -41,6 +82,13 @@ so you can understand it and DIY:
   logic, addresses, and log evidence. For the curious and the DIYer.
 - [docs/overview.md](docs/overview.md) — the idea: why an **add-on layer** (not a
   fork), privacy-first, and how the pieces combine.
+
+## Discussion
+
+Community discussion of this vision enabler on **r/MoxieRobot**:
+
+- https://www.reddit.com/r/MoxieRobot/s/EQ8idhy9WS
+- https://www.reddit.com/r/MoxieRobot/s/V2BJKUBuYt
 
 ## Credits & how this is maintained
 

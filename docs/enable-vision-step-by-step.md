@@ -26,15 +26,22 @@ is **one** of them — the piece that opens the camera gate. Here is the full pa
 
 ```mermaid
 flowchart TD
-    A["Ask: Moxie, what do you see?"] --> B["Moxie robot (fw 24.10.803, relocated)"]
-    B <-->|"MQTT: chat / config / arm"| D["OpenMoxie (Django + mosquitto)"]
-    D --- E["vision-sidecar — THIS add-on: opens the camera gate"]
-    B -->|"camera JPEG to a hardcoded host"| C{"Your router: DNS redirect"}
-    C --> F["Caption server :443 (you run)"]
-    F -->|"JPEG"| G["Vision model / VLM (you run, local)"]
-    G -->|"description"| F
-    F -->|"description"| D
-    D -->|"spoken back by Moxie"| B
+    Q["You ask: Moxie, what do you see?"]
+    R["1. Moxie robot (fw 24.10.803, relocated)"]
+    O["2. OpenMoxie (Django + mosquitto)"]
+    S["3. vision-sidecar (THIS repo): opens the camera gate"]
+    N["4. Your router: DNS redirect"]
+    C["5. Caption server on 443 (you run)"]
+    V["6. Vision model / VLM (you run, local)"]
+    Q --> R
+    R -->|MQTT chat and config| O
+    S -->|arm protos| O
+    R -->|camera JPEG| N
+    N --> C
+    C -->|JPEG| V
+    V -->|description| C
+    C -->|description| O
+    O -->|Moxie speaks it| R
 ```
 
 | # | Part | Role | Who provides it |
