@@ -34,6 +34,12 @@ want, independently. **Start at the add-on's own folder**, e.g.
 OpenMoxie (not a fork), how it stays **privacy-first**, and how add-ons combine into a
 working feature.
 
+## Contributing
+
+Ideas and reports are very welcome — **you don't need to be a programmer.** Bring an
+idea, a bug, a log, or a finding, and the technical work gets done from there. See
+**[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
 ## Credits & how this is maintained
 
 Built by three AI models, directed by the repository owner:

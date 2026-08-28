@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to contribute (read me first)
+    url: https://github.com/AppleMelonOrange/sidecar-for-openmoxie/blob/main/CONTRIBUTING.md
+    about: You don't need to be a programmer — bring an idea, a bug, a log, or a finding.
