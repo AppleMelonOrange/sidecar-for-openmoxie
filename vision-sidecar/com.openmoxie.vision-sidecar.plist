@@ -20,12 +20,14 @@
   <array>
     <string>@HOME@/openmoxie/venv/bin/python</string>
     <string>@HOME@/openmoxie/vision-sidecar/vision_sidecar.py</string>
-    <!-- resend safety-net: the $SYS connect-trigger fires on a fresh boot,
-         but a wake-from-suspend keeps the same MQTT session (no new connect
-         line), so a periodic re-arm keeps the capture gate open across
-         sleep/wake. Idempotent; 60s is negligible traffic. -->
-    <string>--resend-interval</string>
-    <string>60</string>
+    <!-- NO --resend-interval: periodic re-arm is a HEARTBEAT HAMMER.
+         2026-08-28 incident: repeated LoggingStateUpdate(STOP)+EnableICModule
+         (event-arm every ~10s + this resend) crash-looped the robot's XMOS
+         audio subsystem and escalated to full watchdog REBOOTS. Arming is
+         an event — once per connection ($SYS connect line, or first event
+         seen from a not-yet-armed device) — never periodic. If suspend/wake
+         ever closes the gate, add a targeted once-per-wake trigger, not a
+         timer. -->
   </array>
   <key>WorkingDirectory</key>
   <string>@HOME@/openmoxie/vision-sidecar</string>

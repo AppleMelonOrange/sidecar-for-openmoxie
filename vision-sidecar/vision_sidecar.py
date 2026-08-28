@@ -298,13 +298,26 @@ class VisionSidecar:
             return
         gone = extract_disconnect_device_id(line)
         if gone:
-            logger.info('VISION-DISCONNECT dev=%s (resend set kept; armed-at-least-once)', gone)
+            # Clear the armed flag so the device's NEXT connection (fresh
+            # boot = gate closed) gets exactly one new arm from the event
+            # trigger. See the incident note in _on_device_event.
+            self._armed_devices.discard(gone)
+            self._arm_last.pop(gone, None)
+            logger.info('VISION-DISCONNECT dev=%s (armed flag cleared for re-arm on reconnect)', gone)
 
     def _on_device_event(self, device_id, eventname, msg):
-        # Any event proves this device is connected NOW. Arm it (debounced —
-        # a no-op if armed in the last 10s), so a sidecar that started after
-        # the robot connected still opens the gate and enters the resend set.
-        if device_id and device_id.startswith('d_'):
+        # Any event proves this device is connected NOW. Arm it ONCE —
+        # only if we have not already armed it this connection epoch.
+        # ★ 2026-08-28 INCIDENT: the first version armed on every event with
+        # only the 10s debounce, i.e. a re-arm every ~10s forever. Each arm
+        # carries LoggingStateUpdate(state=STOP)+EnableICModule; at that
+        # cadence it crash-looped the robot's XMOS audio subsystem ("Audio
+        # startup" every ~10s) and the watchdog escalated to FULL SYSTEM
+        # REBOOTS (boot logo). Arming must be an event (once per
+        # connection), never a heartbeat. The disconnect handler clears
+        # the device so the next connection arms once again.
+        if (device_id and device_id.startswith('d_')
+                and device_id not in self._armed_devices):
             self.send_arm_protos(device_id, ignore_debounce=False)
         # Incoming JSON body is irrelevant for this branch — core does not read it.
         if not self.http_token_enabled:

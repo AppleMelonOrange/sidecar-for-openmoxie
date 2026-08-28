@@ -204,6 +204,33 @@ class TestHttpTokenReply(unittest.TestCase):
             payload, json.dumps({'command': 'http_token', 'http_token': 'notoken'})
         )
 
+    def test_events_arm_once_per_connection_epoch(self):
+        """2026-08-28 incident regression: events must NEVER become an arm
+        heartbeat. First event from an unarmed device arms (2 protos);
+        subsequent events arm NOTHING, even far outside the 10s debounce —
+        the repeated LoggingStateUpdate(STOP)+EnableICModule at ~10s cadence
+        crash-looped the robot's XMOS audio and caused watchdog reboots.
+        A disconnect line clears the flag so the NEXT connection arms once."""
+        fake = FakeClient()
+        clock = {'t': 100.0}
+        sidecar = vs.VisionSidecar(
+            client=fake, http_token_enabled=False,
+            debounce_s=10.0, time_fn=lambda: clock['t'],
+        )
+        evt = f'/devices/{SYNTH_DEVICE_ID}/events/whatever'
+        sidecar.handle_message(FakeMsg(evt, '{}'))
+        self.assertEqual(len(fake.published), 2)  # armed once
+        for step in (30.0, 120.0, 3600.0):  # far beyond any debounce
+            clock['t'] = 100.0 + step
+            sidecar.handle_message(FakeMsg(evt, '{}'))
+        self.assertEqual(len(fake.published), 2)  # STILL exactly one arm
+        # disconnect -> flag cleared -> next event arms exactly once again
+        disc = f'Client {SYNTH_DEVICE_ID} closed its connection'
+        sidecar.handle_message(FakeMsg('$SYS/broker/log/N', disc))
+        clock['t'] = 4000.0
+        sidecar.handle_message(FakeMsg(evt, '{}'))
+        self.assertEqual(len(fake.published), 4)
+
 
 class TestMergeVisionConfig(unittest.TestCase):
     """Pure-function tests of apply_vision_config.merge — no Django."""
