@@ -47,7 +47,9 @@ DNS redirect of `production-ic-worker.embodied.com` (and friends) to a local
 caption server is **out of scope of this package**. The robot still POSTs
 JPEGs to that vendor hostname; something else (router DNS + the existing
 caption server on :443) has to answer. This sidecar only opens the firmware
-gate that makes those POSTs happen.
+gate that makes those POSTs happen. For those steps (and the full picture), see
+[../docs/enable-vision-step-by-step.md](../docs/enable-vision-step-by-step.md) and
+the findings in [../docs/vision-research-journey.md](../docs/vision-research-journey.md).
 
 ## Prerequisites
 

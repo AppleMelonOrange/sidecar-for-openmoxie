@@ -27,11 +27,20 @@ installer — use whichever you want, independently.
   relocate-QR feature needs 801+; genuinely older robots must be USB-flashed first).
 - A running **OpenMoxie** (Django + mosquitto), native or Docker.
 
-## The idea
+## Learn & do it yourself
 
-See [docs/overview.md](docs/overview.md) — why this is an **add-on layer** around
-stock OpenMoxie (not a fork), how it stays privacy-first, and how the pieces combine
-(e.g. *seeing* = vision-sidecar **+** a caption server **+** a DNS redirect).
+Not just code and an installer — the **findings and the step-by-step** are here too,
+so you can understand it and DIY:
+
+- [**docs/enable-vision-step-by-step.md**](docs/enable-vision-step-by-step.md) — the
+  full vision how-to, step by step. (The `vision-sidecar` add-on automates part of it;
+  this covers the **whole stack**, including the DNS redirect + caption server you set
+  up yourself.)
+- [**docs/vision-research-journey.md**](docs/vision-research-journey.md) — **the
+  findings**: how the camera gate was discovered from the firmware, with the gate
+  logic, addresses, and log evidence. For the curious and the DIYer.
+- [docs/overview.md](docs/overview.md) — the idea: why an **add-on layer** (not a
+  fork), privacy-first, and how the pieces combine.
 
 ## Credits & how this is maintained
 
