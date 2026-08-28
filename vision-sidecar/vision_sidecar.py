@@ -395,8 +395,17 @@ class VisionSidecar:
                     prev = self._power_state.get(device_id)
                     self._power_state[device_id] = state
                     if state == POWER_RUNNING and prev is not None and prev != POWER_RUNNING:
-                        logger.info('VISION-WAKE dev=%s power %s->RUNNING; re-arming once', device_id, prev)
-                        self.send_arm_protos(device_id, ignore_debounce=True, latch=True)
+                        # WAKE: same two-step as cold boot. Arming at the
+                        # transition INSTANT proved too early (2026-08-29
+                        # 00:16 live: two wake-arms sent, gate never opened,
+                        # camera blind; an event-timed re-arm opened it in
+                        # seconds). So: best-effort arm now (unlatched) and
+                        # UNLATCH the device — the next perception event
+                        # (vision subsystem provably up) sends the arm that
+                        # counts via the discovery path.
+                        logger.info('VISION-WAKE dev=%s power %s->RUNNING; best-effort arm + unlatch for event re-arm', device_id, prev)
+                        self.send_arm_protos(device_id, ignore_debounce=True, latch=False)
+                        self._armed_devices.discard(device_id)
             except Exception:
                 logger.exception('powerstate wake check failed (ignored)')
         # Incoming JSON body is irrelevant for this branch — core does not read it.

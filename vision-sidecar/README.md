@@ -213,9 +213,11 @@ events, never a heartbeat. There are three triggers, each firing **at most once*
 1. **Connect** — a *best-effort* arm the moment the robot connects.
 2. **First perception event** — the *latching* arm, once the vision subsystem is up and
    sending events (this is what proves it's actually listening).
-3. **Wake from sleep** — one re-arm when the robot transitions back to `RUNNING`. Sleep
+3. **Wake from sleep** — a re-arm when the robot transitions back to `RUNNING`. Sleep
    closes the capture gate, and a wake keeps the same MQTT session (no new connect), so
-   without this the robot would wake **blind**.
+   without this the robot would wake **blind**. Like boot, this is *two-step*: a
+   best-effort arm at the transition, then the latching arm on the **next perception
+   event** (so it never arms until the subsystem is provably listening).
 
 Together these cover boot, already-connected, and wake-from-nap. A broker-log disconnect
 resets the state for the next connection. Setting `--resend-interval > 0` re-sends the

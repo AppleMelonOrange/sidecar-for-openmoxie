@@ -255,17 +255,26 @@ class TestHttpTokenReply(unittest.TestCase):
         clock['t'] = 200.0
         sidecar.handle_message(FakeMsg(zmq_topic, ps(5)))
         self.assertEqual(len(fake.published), 2)
-        # WAKE: SUSPEND -> RUNNING => exactly one re-arm (2 protos)
+        # WAKE: SUSPEND -> RUNNING => best-effort arm now (2 protos) and
+        # the device is UNLATCHED — the discovery check already ran for
+        # this message, so the latching arm fires on the NEXT event, when
+        # the vision subsystem has had strictly more time to come up.
+        # (2026-08-29 00:16 live: arming only at the transition instant was
+        # too early — gate never opened; the event-timed arm opened it.)
         clock['t'] = 300.0
         sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
         self.assertEqual(len(fake.published), 4)
-        # steady RUNNING frames: nothing
+        # next event after wake: the LATCHING discovery arm (+2)
         clock['t'] = 400.0
         sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
-        self.assertEqual(len(fake.published), 4)
+        self.assertEqual(len(fake.published), 6)
+        # steady RUNNING frames after that: nothing further
+        clock['t'] = 500.0
+        sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
+        self.assertEqual(len(fake.published), 6)
         # parser: non-powerstate zmq payload is ignored quietly
         sidecar.handle_message(FakeMsg(zmq_topic, b'embodied.other.ThingPB:\x08\x01'))
-        self.assertEqual(len(fake.published), 4)
+        self.assertEqual(len(fake.published), 6)
 
 
 class TestMergeVisionConfig(unittest.TestCase):
