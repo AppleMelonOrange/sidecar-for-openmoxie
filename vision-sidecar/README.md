@@ -8,10 +8,44 @@ This is community work around a discontinued device, on the **owner's own
 hardware**, at the network/backend layer. It is **not** reverse engineering,
 **not** firmware modification, and **not** a fork of OpenMoxie.
 
-> **This add-on is ONE part of a stack.** It opens the camera gate — *seeing* also
-> needs a DNS redirect, a caption server, and a vision model. The full picture, the
-> step-by-step, and a stack diagram are in
-> [../docs/enable-vision-step-by-step.md](../docs/enable-vision-step-by-step.md).
+### This add-on is ONE part of a stack
+
+It opens the camera gate — *seeing* also needs a DNS redirect, a caption server, and a
+vision model. The full path a "Moxie, what do you see?" request travels:
+
+```mermaid
+flowchart TD
+    Q["You ask: Moxie, what do you see?"]
+    R["1. Moxie robot (fw 24.10.803, relocated)"]
+    O["2. OpenMoxie (Django + mosquitto)"]
+    S["3. vision-sidecar (THIS add-on): opens the camera gate"]
+    N["4. Your router: DNS redirect"]
+    C["5. Caption server on 443 (you run)"]
+    V["6. Vision model / VLM (you run, local)"]
+    Q --> R
+    R -->|MQTT chat and config| O
+    S -->|arm protos| O
+    R -->|camera JPEG| N
+    N --> C
+    C -->|JPEG| V
+    V -->|description| C
+    C -->|description| O
+    O -->|Moxie speaks it| R
+```
+
+| # | Part | Who provides it |
+|---|---|---|
+| 1 | **Moxie robot** (fw 803, relocated) | your robot |
+| 2 | **OpenMoxie** (Django + mosquitto) | upstream `jbeghtol/openmoxie` |
+| 3 | **vision-sidecar** — opens the camera gate | **THIS add-on** |
+| 4 | **Router DNS redirect** | you (one router rule) |
+| 5 | **Caption server** (`:443`) | you (not yet packaged here) |
+| 6 | **Vision model / VLM** | you (any local or cloud VLM) |
+| 7 | **Chat glue** (speak the answer) | you (a small OpenMoxie module) |
+
+Only **#3** is this add-on. Full step-by-step + why it works:
+[docs/enable-vision-step-by-step.md](docs/enable-vision-step-by-step.md) · the findings:
+[docs/vision-technical-report.md](docs/vision-technical-report.md).
 
 **Status: proven and in use.** The arm path was verified on-robot (A/B test:
 the in-core arm senders disabled, this sidecar the only thing arming — the
@@ -53,8 +87,8 @@ caption server is **out of scope of this package**. The robot still POSTs
 JPEGs to that vendor hostname; something else (router DNS + the existing
 caption server on :443) has to answer. This sidecar only opens the firmware
 gate that makes those POSTs happen. For those steps (and the full picture), see
-[../docs/enable-vision-step-by-step.md](../docs/enable-vision-step-by-step.md) and
-the findings in [../docs/vision-technical-report.md](../docs/vision-technical-report.md).
+[docs/enable-vision-step-by-step.md](docs/enable-vision-step-by-step.md) and
+the findings in [docs/vision-technical-report.md](docs/vision-technical-report.md).
 
 ## Prerequisites
 

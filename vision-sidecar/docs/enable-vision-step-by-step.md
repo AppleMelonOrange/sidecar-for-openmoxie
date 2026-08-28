@@ -9,7 +9,7 @@ This is the exact minimum recipe that works.
 > vision‑language model, and a network router capable of custom DNS overrides. Nothing
 > here is specific to that hardware — any OpenMoxie host works.
 
-> **Using this repo's [`vision-sidecar/`](../vision-sidecar/) add-on?** It **automates
+> **Using this repo's [`vision-sidecar`](..) add-on?** It **automates
 > steps 1–3** below (the config, the http‑token reply, and the two arm messages), so
 > with the add‑on you only do **steps 4–5** (the DNS redirect + a caption server). This
 > page explains what's happening under the hood — and lets you do the whole thing by
