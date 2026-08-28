@@ -14,7 +14,41 @@ This is the exact minimum recipe that works.
 > with the add‑on you only do **steps 4–5** (the DNS redirect + a caption server). This
 > page explains what's happening under the hood — and lets you do the whole thing by
 > hand if you prefer. For *why* it works (the firmware detective story), see
-> [vision-research-journey.md](vision-research-journey.md).
+> [vision-technical-report.md](vision-technical-report.md).
+
+---
+
+## What you need — the whole "describe what you see" stack
+
+Enabling vision is a **stack of parts**, not one thing. `vision-sidecar` (this repo)
+is **one** of them — the piece that opens the camera gate. Here is the full path a
+"Moxie, what do you see?" request travels, and who provides each piece:
+
+```mermaid
+flowchart TD
+    A["Ask: Moxie, what do you see?"] --> B["Moxie robot (fw 24.10.803, relocated)"]
+    B <-->|"MQTT: chat / config / arm"| D["OpenMoxie (Django + mosquitto)"]
+    D --- E["vision-sidecar — THIS add-on: opens the camera gate"]
+    B -->|"camera JPEG to a hardcoded host"| C{"Your router: DNS redirect"}
+    C --> F["Caption server :443 (you run)"]
+    F -->|"JPEG"| G["Vision model / VLM (you run, local)"]
+    G -->|"description"| F
+    F -->|"description"| D
+    D -->|"spoken back by Moxie"| B
+```
+
+| # | Part | Role | Who provides it |
+|---|---|---|---|
+| 1 | **Moxie robot** (fw 803, relocated) | the camera + the voice | your robot |
+| 2 | **OpenMoxie** (Django + mosquitto) | the backend the robot talks to | upstream `jbeghtol/openmoxie` |
+| 3 | **vision-sidecar** | opens the firmware camera gate (steps 1–3) | **THIS repo** |
+| 4 | **Router DNS redirect** | sends the camera POSTs to your server | you (one router rule) |
+| 5 | **Caption server** (`:443`) | receives JPEGs, calls the VLM, replies | you (not yet packaged here) |
+| 6 | **Vision model / VLM** | describes the image | you (any local or cloud VLM) |
+| 7 | **Chat glue** | speaks the answer for "what do you see?" | you (a small OpenMoxie module/global) |
+
+**Only #3 is this add-on.** #4–#7 you set up yourself. The steps below cover #1–#6;
+#7 (wiring vision into conversation) is a small OpenMoxie module.
 
 ---
 

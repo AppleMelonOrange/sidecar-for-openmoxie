@@ -36,7 +36,7 @@ so you can understand it and DIY:
   full vision how-to, step by step. (The `vision-sidecar` add-on automates part of it;
   this covers the **whole stack**, including the DNS redirect + caption server you set
   up yourself.)
-- [**docs/vision-research-journey.md**](docs/vision-research-journey.md) — **the
+- [**docs/vision-technical-report.md**](docs/vision-technical-report.md) — **the
   findings**: how the camera gate was discovered from the firmware, with the gate
   logic, addresses, and log evidence. For the curious and the DIYer.
 - [docs/overview.md](docs/overview.md) — the idea: why an **add-on layer** (not a
@@ -44,10 +44,11 @@ so you can understand it and DIY:
 
 ## Credits & how this is maintained
 
-Built with **Claude (Anthropic)** and **Grok (xAI)**. Grok did much of the firmware
-disassembly and research that mapped the robot's dormant capabilities; Claude did the
-design, **coding**, integration, and packaging. The work was **verified live on a
-real Moxie**.
+Built by three AI models, directed by the repository owner:
+**Claude Opus 4.8** and **Claude Fable 5** (Anthropic), and **Grok 4.6** (xAI). All
+three **wrote code**; Grok also did much of the **firmware disassembly** and the
+research that mapped the robot's dormant capabilities. The work was **verified live on
+a real Moxie**.
 
 The repository owner is **not a programmer** — they set the goals, test on the real
 robot, and publish; they don't hand-write the code. **Support here is AI-assisted:**

@@ -8,6 +8,11 @@ This is community work around a discontinued device, on the **owner's own
 hardware**, at the network/backend layer. It is **not** reverse engineering,
 **not** firmware modification, and **not** a fork of OpenMoxie.
 
+> **This add-on is ONE part of a stack.** It opens the camera gate — *seeing* also
+> needs a DNS redirect, a caption server, and a vision model. The full picture, the
+> step-by-step, and a stack diagram are in
+> [../docs/enable-vision-step-by-step.md](../docs/enable-vision-step-by-step.md).
+
 **Status: proven and in use.** The arm path was verified on-robot (A/B test:
 the in-core arm senders disabled, this sidecar the only thing arming — the
 robot booted with the capture gate closed and camera frames streamed once
@@ -49,7 +54,7 @@ JPEGs to that vendor hostname; something else (router DNS + the existing
 caption server on :443) has to answer. This sidecar only opens the firmware
 gate that makes those POSTs happen. For those steps (and the full picture), see
 [../docs/enable-vision-step-by-step.md](../docs/enable-vision-step-by-step.md) and
-the findings in [../docs/vision-research-journey.md](../docs/vision-research-journey.md).
+the findings in [../docs/vision-technical-report.md](../docs/vision-technical-report.md).
 
 ## Prerequisites
 
@@ -211,10 +216,11 @@ rm ~/Library/LaunchAgents/com.openmoxie.vision-sidecar.plist
 
 ## Credits & how this is maintained
 
-Built with **Claude (Anthropic)** and **Grok (xAI)**. Grok did much of the firmware
-disassembly and research that mapped the camera gate; Claude did the design,
-**coding**, integration, and packaging. The camera-enable path was **A/B-proven live
-on a real Moxie** and ships with a test suite.
+Built by three AI models, directed by the repository owner: **Claude Opus 4.8** and
+**Claude Fable 5** (Anthropic), and **Grok 4.6** (xAI). All three **wrote code**; Grok
+also did much of the **firmware disassembly** and the research that mapped the camera
+gate. The camera-enable path was **A/B-proven live on a real Moxie** and ships with a
+test suite.
 
 The repository owner is **not a programmer** — they set the goals, test on the real
 robot, and publish; they don't hand-write the code. **Support here is AI-assisted:**
