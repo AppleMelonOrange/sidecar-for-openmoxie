@@ -190,15 +190,17 @@ class TestHttpTokenReply(unittest.TestCase):
             time_fn=lambda: clock['t'],
         )
         sidecar.handle_message(FakeMsg('$SYS/broker/log/N', SYNTH_CONNECT_LINE))
-        self.assertEqual(len(fake.published), 2)
+        self.assertEqual(len(fake.published), 2)  # best-effort connect arm (unlatched)
         sidecar.handle_message(
             FakeMsg(
                 f'/devices/{SYNTH_DEVICE_ID}/events/client-service-http-token',
                 '{}',
             )
         )
-        self.assertEqual(len(fake.published), 3)
-        topic, payload = fake.published[2]
+        # First event after the connect: the LATCHING arm (2, ignores the
+        # connect arm's debounce — boot sequence) + the http-token reply.
+        self.assertEqual(len(fake.published), 5)
+        topic, payload = fake.published[4]
         self.assertEqual(topic, f'/devices/{SYNTH_DEVICE_ID}/commands/http_token')
         self.assertEqual(
             payload, json.dumps({'command': 'http_token', 'http_token': 'notoken'})

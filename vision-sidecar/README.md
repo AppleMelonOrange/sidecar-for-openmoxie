@@ -207,12 +207,13 @@ Flags (each has an env fallback):
 | `--http-token` / `--no-http-token` | `VISION_SIDECAR_HTTP_TOKEN` | on |
 | `--resend-interval` seconds | `VISION_SIDECAR_RESEND_INTERVAL` | `0` (leave at 0 — see note below) |
 
-**Arming is once per connection — leave `--resend-interval` at `0`.** The arm messages
-are events: the robot needs them once per connection, not repeatedly. The sidecar arms
-each device once per connect (a broker-log disconnect clears the flag, so the next boot
-arms exactly once). Setting `--resend-interval > 0` re-sends the two arm protos on a
-timer, which can overload the robot's audio subsystem — so don't; arm once, not as a
-heartbeat.
+**Arming happens at most twice per connection — leave `--resend-interval` at `0`.** The
+arm messages are events, not a heartbeat. Boot sequence: a **best-effort** arm fires the
+moment the robot connects, and the **latching** arm fires on the device's **first
+perception event** (events flowing proves the vision subsystem is up and listening) — so
+**at most 2 arms per connection**. A broker-log disconnect clears the flag, so the next
+boot starts fresh. Setting `--resend-interval > 0` re-sends the arm protos on a timer,
+which can overload the robot's audio subsystem — so don't.
 
 Logs to stdout:
 

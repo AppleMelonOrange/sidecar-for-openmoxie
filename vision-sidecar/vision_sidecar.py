@@ -192,11 +192,18 @@ class VisionSidecar:
 
     # ----- publish helpers (the only place that talks to the client) -----
 
-    def send_arm_protos(self, device_id, ignore_debounce=False):
+    def send_arm_protos(self, device_id, ignore_debounce=False, latch=True):
         """Publish LoggingStateUpdate then EnableICModule. Returns True if sent.
 
-        Debounce is per-device, 10s, skipped when ignore_debounce=True (the
-        explicit resend-interval fallback).
+        Debounce is per-device, 10s, skipped when ignore_debounce=True.
+        latch=False sends the protos but does NOT mark the device armed —
+        used by the $SYS connect-line trigger, whose arm can land TOO EARLY
+        in a cold boot (2026-08-28: the boot-connect arm fired before the
+        native vision subsystem was listening; with once-only latching there
+        was no retry and the camera stayed dead all session). The arm that
+        LATCHES is the first-event arm: events flowing prove the perception
+        subsystems are up and able to receive. Max 2 arms per connection
+        epoch (connect best-effort + first-event latch) — never a heartbeat.
         """
         now = self._now()
         if not ignore_debounce:
@@ -211,8 +218,10 @@ class VisionSidecar:
         self._client.publish(topic, payload=frame_zmq_payload(lsu))
         self._client.publish(topic, payload=frame_zmq_payload(eic))
         self._arm_last[device_id] = now
-        self._armed_devices.add(device_id)
-        logger.info('VISION-ARM dev=%s sent 2 protos', device_id)
+        if latch:
+            self._armed_devices.add(device_id)
+        logger.info('VISION-ARM dev=%s sent 2 protos%s', device_id,
+                    '' if latch else ' (best-effort, unlatched)')
         return True
 
     def send_http_token(self, device_id):
@@ -294,7 +303,10 @@ class VisionSidecar:
         line = _payload_text(msg.payload)
         device_id = extract_connect_device_id(line)
         if device_id:
-            self.send_arm_protos(device_id, ignore_debounce=False)
+            # Best-effort early arm (may land before the vision subsystem is
+            # up during a cold boot) — does NOT latch; the first-event arm
+            # is the one that counts. See send_arm_protos docstring.
+            self.send_arm_protos(device_id, ignore_debounce=False, latch=False)
             return
         gone = extract_disconnect_device_id(line)
         if gone:
@@ -318,7 +330,10 @@ class VisionSidecar:
         # the device so the next connection arms once again.
         if (device_id and device_id.startswith('d_')
                 and device_id not in self._armed_devices):
-            self.send_arm_protos(device_id, ignore_debounce=False)
+            # ignore_debounce: at boot the best-effort connect arm fires
+            # seconds before the first event — the debounce must not
+            # swallow the one arm that latches.
+            self.send_arm_protos(device_id, ignore_debounce=True, latch=True)
         # Incoming JSON body is irrelevant for this branch — core does not read it.
         if not self.http_token_enabled:
             return
