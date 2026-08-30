@@ -9,8 +9,10 @@ Runnable as:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import threading
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -36,13 +38,26 @@ SYNTH_CONNECT_LINE = (
 
 
 class FakeClient:
-    """Records publish() calls. No network."""
+    """Records publish() calls. No network.
+
+    connect / loop_forever / username_pw_set are no-ops so tests can call
+    VisionSidecar.run() without blocking on a real broker.
+    """
 
     def __init__(self):
         self.published = []
 
     def publish(self, topic, payload=None):
         self.published.append((topic, payload))
+
+    def connect(self, host, port, keepalive=60):
+        return 0
+
+    def username_pw_set(self, username=None, password=None):
+        pass
+
+    def loop_forever(self):
+        return
 
 
 class FakeMsg:
@@ -313,6 +328,247 @@ class TestMergeVisionConfig(unittest.TestCase):
         new_c, new_s = avc.merge_vision_config(config, settings)
         self.assertEqual(new_c, config)
         self.assertEqual(new_s, settings)
+
+
+# ---------------------------------------------------------------------------
+# Episode-bounded stale-frame re-arm
+#
+# Tests 1-5 call _stale_check_tick() directly: the flood bound is a pure
+# state-machine invariant (age + clock + power), and driving the tick
+# method with a fake clock + injected age fn proves it without a 30s
+# sleep or a real frames dir. Test 6 (and the feature-on counterpart)
+# exercise run()'s thread-start gating, which is the other half of
+# "opt-in, otherwise 100% unchanged".
+# ---------------------------------------------------------------------------
+
+STALE_THREAD_NAME = 'vision-sidecar-stale-check'
+POWER_SUSPEND = 5  # firmware PowerStatePB.state; sidecar only names POWER_RUNNING
+
+
+def _zmq_count(fake, device_id=SYNTH_DEVICE_ID):
+    topic = f'/devices/{device_id}/commands/zmq'
+    return sum(1 for (t, _p) in fake.published if t == topic)
+
+
+class _LogList(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+class TestStaleFrameRearm(unittest.TestCase):
+    """Flood-safety: at most 2 arms per stall episode, reset only on real frame flow."""
+
+    def _sidecar(self, age_fn, clock, frames_glob='/x/fast_*.jpg'):
+        fake = FakeClient()
+        sidecar = vs.VisionSidecar(
+            client=fake,
+            http_token_enabled=False,
+            debounce_s=10.0,
+            time_fn=lambda: clock['t'],
+            frames_glob=frames_glob,
+            newest_frame_age_fn=age_fn,
+        )
+        return sidecar, fake
+
+    def _running(self, sidecar, device_id=SYNTH_DEVICE_ID):
+        sidecar._armed_devices.add(device_id)
+        sidecar._power_state[device_id] = vs.POWER_RUNNING
+
+    def _capture_logs(self):
+        handler = _LogList()
+        log = logging.getLogger('vision_sidecar')
+        prev_level = log.level
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        self.addCleanup(lambda: (log.removeHandler(handler), log.setLevel(prev_level)))
+        return handler
+
+    def test_bound_holds_over_unbounded_stall(self):
+        """THE BOUND: 100 ticks, always-stale, hours between ticks → exactly 2 arms.
+
+        Always-stale age of 999999, fake clock +3600s per tick, device RUNNING.
+        Exactly 4 raw zmq publishes (2 protos × 2 arms), exactly one
+        VISION-STALE-GIVEUP, and nothing further across the remaining ticks.
+        A long-elapsed clock alone must NEVER reset the episode.
+        """
+        clock = {'t': 0.0}
+        sidecar, fake = self._sidecar(lambda: 999999, clock)
+        self._running(sidecar)
+        logs = self._capture_logs()
+
+        for _ in range(100):
+            sidecar._stale_check_tick()
+            clock['t'] += 3600.0
+
+        self.assertEqual(
+            _zmq_count(fake),
+            4,
+            'expected exactly 2 arms (4 zmq publishes) over 100 stale hours; got %r'
+            % (fake.published,),
+        )
+        giveups = [
+            m for m in logs.messages
+            if 'VISION-STALE-GIVEUP' in m and SYNTH_DEVICE_ID in m
+        ]
+        self.assertEqual(
+            len(giveups),
+            1,
+            'expected exactly one GIVEUP log; got %r' % (logs.messages,),
+        )
+        rearms = [m for m in logs.messages if 'VISION-STALE-REARM' in m]
+        self.assertEqual(len(rearms), 2, rearms)
+        self.assertEqual(sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'], 2)
+
+    def test_recovery_resets_only_on_real_frame_flow(self):
+        """Episode resets only when age drops; elapsed wall-clock alone does not.
+
+        Sub-case: after 2 arms, a tick with huge elapsed time but age STILL
+        stale must not reset and must not send a 3rd arm. Then one recovery
+        tick (age=10) resets arms to 0. Then stall again → exactly 2 more
+        arms (4 more publishes), proving the reset re-enabled the bound.
+        """
+        clock = {'t': 0.0}
+        age = {'v': 999999}
+        sidecar, fake = self._sidecar(lambda: age['v'], clock)
+        self._running(sidecar)
+
+        sidecar._stale_check_tick()          # arm 1
+        clock['t'] += 3600.0
+        sidecar._stale_check_tick()          # arm 2
+        self.assertEqual(_zmq_count(fake), 4)
+        self.assertEqual(sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'], 2)
+
+        # Huge elapsed time, still stale: must NOT reset, must NOT send a 3rd arm.
+        clock['t'] += 10_000_000.0
+        sidecar._stale_check_tick()
+        self.assertEqual(
+            _zmq_count(fake),
+            4,
+            'elapsed wall-clock alone must not send a 3rd arm; got %r' % (fake.published,),
+        )
+        self.assertEqual(
+            sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'],
+            2,
+            'elapsed wall-clock alone must not reset the episode',
+        )
+
+        # Real frame flow: age <= STALE_AFTER_S.
+        age['v'] = 10
+        sidecar._stale_check_tick()
+        self.assertEqual(sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'], 0)
+        self.assertFalse(sidecar._stale_episodes[SYNTH_DEVICE_ID]['gave_up_logged'])
+        self.assertEqual(_zmq_count(fake), 4, 'recovery tick must send nothing')
+
+        # Stall again: bound re-enabled, exactly 2 more arms.
+        age['v'] = 999999
+        sidecar._stale_check_tick()          # arm 1 of new episode
+        clock['t'] += 3600.0
+        sidecar._stale_check_tick()          # arm 2 of new episode
+        self.assertEqual(_zmq_count(fake), 8)
+        self.assertEqual(sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'], 2)
+
+    def test_frames_flowing_sends_nothing(self):
+        """Age always well under STALE_AFTER_S → zero publishes across many ticks."""
+        clock = {'t': 0.0}
+        sidecar, fake = self._sidecar(lambda: 10, clock)
+        self._running(sidecar)
+        for _ in range(50):
+            sidecar._stale_check_tick()
+            clock['t'] += 3600.0
+        self.assertEqual(len(fake.published), 0, fake.published)
+
+    def test_power_gating_suspend_and_unknown(self):
+        """SUSPEND and unknown power → zero arms; RUNNING mid-episode still bound to 2."""
+        clock = {'t': 0.0}
+        sidecar, fake = self._sidecar(lambda: 999999, clock)
+
+        # Unknown / absent: device in the armed set but not in _power_state.
+        sidecar._armed_devices.add(SYNTH_DEVICE_ID)
+        for _ in range(5):
+            sidecar._stale_check_tick()
+            clock['t'] += 3600.0
+        self.assertEqual(len(fake.published), 0, fake.published)
+
+        # SUSPEND: known, but not RUNNING.
+        sidecar._power_state[SYNTH_DEVICE_ID] = POWER_SUSPEND
+        for _ in range(5):
+            sidecar._stale_check_tick()
+            clock['t'] += 3600.0
+        self.assertEqual(len(fake.published), 0, fake.published)
+
+        # Flip to RUNNING mid-episode: arms begin, still bounded to exactly 2
+        # even though many stale ticks preceded the flip.
+        sidecar._power_state[SYNTH_DEVICE_ID] = vs.POWER_RUNNING
+        for _ in range(20):
+            sidecar._stale_check_tick()
+            clock['t'] += 3600.0
+        self.assertEqual(
+            _zmq_count(fake),
+            4,
+            'after RUNNING flip, still exactly 2 arms; got %r' % (fake.published,),
+        )
+
+    def test_age_none_is_silent(self):
+        """No caption server / no frames dir: zero publishes and zero STALE logs."""
+        clock = {'t': 0.0}
+        sidecar, fake = self._sidecar(lambda: None, clock)
+        self._running(sidecar)
+        logs = self._capture_logs()
+        for _ in range(20):
+            sidecar._stale_check_tick()
+            clock['t'] += 3600.0
+        self.assertEqual(len(fake.published), 0, fake.published)
+        stale_logs = [
+            m for m in logs.messages
+            if 'VISION-STALE-REARM' in m or 'VISION-STALE-GIVEUP' in m
+        ]
+        self.assertEqual(stale_logs, [], 'age=None must not log-spam; got %r' % (logs.messages,))
+
+    def test_feature_off_does_not_start_thread(self):
+        """Empty/default frames_glob: run() must not start the stale-check thread."""
+        fake = FakeClient()
+        sidecar = vs.VisionSidecar(
+            client=fake,
+            http_token_enabled=False,
+            frames_glob='',
+        )
+        sidecar.run()
+        self.assertFalse(
+            getattr(sidecar, '_stale_check_started', False),
+            'stale-check thread must not start when frames_glob is empty',
+        )
+        self.assertIsNone(getattr(sidecar, '_stale_check_thread', None))
+        names = [t.name for t in threading.enumerate()]
+        self.assertNotIn(STALE_THREAD_NAME, names)
+
+    def test_feature_on_starts_stale_thread(self):
+        """Non-empty frames_glob: run() starts the named daemon thread.
+
+        Completes the gating proof for test_feature_off_does_not_start_thread.
+        Stop the thread immediately so it cannot tick during other tests.
+        """
+        fake = FakeClient()
+        sidecar = vs.VisionSidecar(
+            client=fake,
+            http_token_enabled=False,
+            frames_glob='/x/fast_*.jpg',
+            newest_frame_age_fn=lambda: None,
+        )
+        sidecar.run()
+        try:
+            self.assertTrue(sidecar._stale_check_started)
+            self.assertIsNotNone(sidecar._stale_check_thread)
+            self.assertEqual(sidecar._stale_check_thread.name, STALE_THREAD_NAME)
+            self.assertTrue(sidecar._stale_check_thread.daemon)
+            names = [t.name for t in threading.enumerate()]
+            self.assertIn(STALE_THREAD_NAME, names)
+        finally:
+            sidecar._stop.set()
+            sidecar._stale_check_thread.join(timeout=1.0)
 
 
 if __name__ == '__main__':

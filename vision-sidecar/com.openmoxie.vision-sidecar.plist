@@ -28,6 +28,15 @@
          seen from a not-yet-armed device) — never periodic. If suspend/wake
          ever closes the gate, add a targeted once-per-wake trigger, not a
          timer. -->
+    <!-- Episode-bounded stall watchdog (NOT a heartbeat, NOT --resend-interval).
+         Polls frame mtimes via these globs; if frames go stale while the
+         device is RUNNING, at most 2 arms per stall episode. The arm
+         counter resets ONLY when frames are observed actually flowing
+         again — never on a timer alone. Distinct from the heartbeat-hammer
+         this file already forbids: file-stat polling is a timer (reading
+         a file is fine); messages to the robot are strictly event-driven. -->
+    <string>--frames-glob</string>
+    <string>@HOME@/openmoxie/caption/frames/fast_*.jpg,@HOME@/openmoxie/caption/frames/frame_*.jpg</string>
   </array>
   <key>WorkingDirectory</key>
   <string>@HOME@/openmoxie/vision-sidecar</string>

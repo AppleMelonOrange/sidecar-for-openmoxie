@@ -40,6 +40,7 @@ See: docs/ENABLE_VISION_ON_MOXIE.md, docs/PROJECT_OVERVIEW.md
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import logging
 import os
@@ -81,6 +82,22 @@ DEFAULT_HTTP_TOKEN = 'notoken'
 # field 3 = prev_state varint.
 POWERSTATE_PREFIX = b'embodied.power.PowerStatePB:'
 POWER_RUNNING = 3
+
+# Episode-bounded stale-frame re-arm (opt-in via --frames-glob).
+# WHY: the camera can stall mid-session (frames stop, robot stays awake).
+# The in-core config-push watchdog (moxie_server._check_vision_alive) froze
+# conversations ~2 min (public Issue #1) and cannot arm since 3fcedde
+# (arming moved here). Revival is this sidecar's job now.
+#
+# FLOOD-SAFETY (2026-08-28 incident): a ~10s arm heartbeat crash-looped
+# the robot's XMOS audio subsystem and triggered watchdog reboots. Hard
+# bound: at most 2 arms per stall episode. An episode's counter resets
+# ONLY when frames are observed actually flowing again — never on a
+# timer alone. File-stat polling on a timer is fine (that's just reading
+# a file); messages sent to the robot are strictly event-driven.
+STALE_AFTER_S = 120
+SECOND_ARM_AFTER_S = 300
+CHECK_PERIOD_S = 30
 
 
 def parse_powerstate_state(payload):
@@ -191,6 +208,49 @@ def http_token_command_payload(token=DEFAULT_HTTP_TOKEN):
     return json.dumps({'command': 'http_token', 'http_token': token})
 
 
+def parse_frames_glob(raw):
+    """Split a comma-separated glob string into non-empty patterns.
+
+    Empty / None → [] (feature OFF). A list/tuple is accepted so tests can
+    pass patterns without joining.
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(p).strip() for p in raw if str(p).strip()]
+    return [p.strip() for p in str(raw).split(',') if p.strip()]
+
+
+def newest_frame_age(patterns):
+    """Seconds since the newest file matching any glob, or None.
+
+    Never raises. No matches / missing dir / empty patterns → None
+    (mirrors core moxie_server._newest_frame_age: no caption server here
+    means do nothing at all, not even a log line).
+    """
+    if not patterns:
+        return None
+    newest = 0.0
+    try:
+        for pattern in patterns:
+            try:
+                matches = glob.glob(pattern)
+            except (OSError, ValueError):
+                continue
+            for path in matches:
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue  # rotated away under us
+                if mtime > newest:
+                    newest = mtime
+    except Exception:
+        return None
+    if newest == 0.0:
+        return None
+    return time.time() - newest
+
+
 def _payload_text(payload):
     if isinstance(payload, bytes):
         return payload.decode('utf-8')
@@ -215,6 +275,8 @@ class VisionSidecar:
         time_fn=None,
         broker_host='localhost',
         broker_port=8883,
+        frames_glob='',
+        newest_frame_age_fn=None,
     ):
         self._client = client
         self.http_token_enabled = http_token_enabled
@@ -238,6 +300,21 @@ class VisionSidecar:
         self._power_state = {}
         self._tried_unknown_user = False
         self._stop = threading.Event()
+        # Stale-frame re-arm is opt-in: empty frames_glob means the feature
+        # is OFF (no thread, behavior identical to before this existed).
+        self._frames_glob_patterns = parse_frames_glob(frames_glob)
+        # Per-device episode state: {device_id: {'arms': int, 'ts': float,
+        # 'gave_up_logged': bool}}. Counter resets ONLY on observed frame
+        # flow — never on elapsed wall-clock alone. See _stale_check_tick.
+        self._stale_episodes = {}
+        self._stale_check_thread = None
+        self._stale_check_started = False
+        # Injectable seam so tests drive age with a fake clock / no FS.
+        # Default never raises (see newest_frame_age).
+        self._newest_frame_age_fn = (
+            newest_frame_age_fn if newest_frame_age_fn is not None
+            else self._newest_frame_age_from_globs
+        )
 
     # ----- publish helpers (the only place that talks to the client) -----
 
@@ -430,6 +507,86 @@ class VisionSidecar:
                 except Exception:
                     logger.exception('resend arm failed for %s', device_id)
 
+    def _newest_frame_age_from_globs(self):
+        """Real newest-frame-age: glob configured patterns, stat mtimes.
+
+        Never raises. No dir / no matching files → None (do nothing).
+        """
+        return newest_frame_age(self._frames_glob_patterns)
+
+    def _stale_check_tick(self):
+        """Apply one stale-frame check. File-stat is on a timer; arms are not.
+
+        HARD INVARIANT: total arms sent per episode is ALWAYS <= 2 no matter
+        how long the stall lasts; the ONLY way an episode's arm counter
+        resets to 0 is observing frames actually flowing again
+        (age <= STALE_AFTER_S from the real glob/mtime check) — a
+        long-elapsed clock alone must NEVER reset it. Enforced by
+        TestStaleFrameRearm.test_bound_holds_over_unbounded_stall and
+        test_recovery_resets_only_on_real_frame_flow.
+
+        Known accepted imprecision: frames also legitimately pause when
+        nobody is engaging the robot (idle) and the sidecar cannot see
+        engagement state, so these 2 bounded arms will also fire during
+        ordinary idle periods. Harmless for now (send_arm_protos is
+        idempotent and capped at 2/episode).
+        TODO: replace this idle false-positive with the real gate-closed
+        signal once the firmware lane identifies it — do not "fix" it now
+        by weakening the flood bound.
+        """
+        try:
+            age = self._newest_frame_age_fn()
+        except Exception:
+            return
+        if age is None:
+            return
+        if age <= STALE_AFTER_S:
+            # Frames flowing: reset EVERY tracked episode. Nothing is sent.
+            for ep in self._stale_episodes.values():
+                ep['arms'] = 0
+                ep['ts'] = 0.0
+                ep['gave_up_logged'] = False
+            return
+        # Stall episode in progress.
+        devices = set(self._armed_devices) | set(self._power_state.keys())
+        now = self._now()
+        for device_id in devices:
+            # Unknown / not in dict / any state other than RUNNING → never arm.
+            if self._power_state.get(device_id) != POWER_RUNNING:
+                continue
+            episode = self._stale_episodes.get(device_id)
+            if episode is None:
+                episode = {'arms': 0, 'ts': 0.0, 'gave_up_logged': False}
+                self._stale_episodes[device_id] = episode
+            if episode['arms'] == 0:
+                self.send_arm_protos(device_id, ignore_debounce=True, latch=True)
+                episode['arms'] = 1
+                episode['ts'] = now
+                logger.info('VISION-STALE-REARM dev=%s attempt=1 age=%s', device_id, age)
+            elif episode['arms'] == 1 and (now - episode['ts']) >= SECOND_ARM_AFTER_S:
+                self.send_arm_protos(device_id, ignore_debounce=True, latch=True)
+                episode['arms'] = 2
+                episode['ts'] = now
+                logger.info('VISION-STALE-REARM dev=%s attempt=2 age=%s', device_id, age)
+            elif episode['arms'] >= 2:
+                if not episode['gave_up_logged']:
+                    logger.info('VISION-STALE-GIVEUP dev=%s', device_id)
+                    episode['gave_up_logged'] = True
+            # arms==1 but not yet SECOND_ARM_AFTER_S: do nothing, no log.
+
+    def _stale_check_loop(self):
+        """Daemon thread: poll frame mtimes every CHECK_PERIOD_S.
+
+        The poll itself is a timer (reading files is fine). Any message
+        sent to the robot is event-driven inside _stale_check_tick —
+        never a heartbeat.
+        """
+        while not self._stop.wait(CHECK_PERIOD_S):
+            try:
+                self._stale_check_tick()
+            except Exception:
+                logger.exception('stale-check tick failed (ignored)')
+
     def _connect_broker(self):
         """Anonymous first, then username 'unknown' with no password.
 
@@ -459,6 +616,21 @@ class VisionSidecar:
             )
             t.start()
             logger.info('Resend thread on, interval=%ss', self.resend_interval)
+        # Stale-frame re-arm thread: ONLY if frames_glob was configured.
+        # Empty glob → no thread, 100% unchanged from before this existed.
+        if self._frames_glob_patterns:
+            t = threading.Thread(
+                target=self._stale_check_loop,
+                name='vision-sidecar-stale-check',
+                daemon=True,
+            )
+            self._stale_check_thread = t
+            self._stale_check_started = True
+            t.start()
+            logger.info(
+                'Stale-frame re-arm thread on (episode-bounded, max 2 arms/episode; glob=%s)',
+                ','.join(self._frames_glob_patterns),
+            )
         logger.info('Entering loop_forever (paho automatic reconnect)')
         self._client.loop_forever()
 
@@ -532,6 +704,15 @@ def parse_args(argv=None):
         help='Seconds between fallback re-arms of every armed-at-least-once device. '
         '0 = only arm on a $SYS connect line (env VISION_SIDECAR_RESEND_INTERVAL).',
     )
+    parser.add_argument(
+        '--frames-glob',
+        default=os.environ.get('VISION_SIDECAR_FRAMES_GLOB', ''),
+        help='Comma-separated glob patterns whose file mtimes track received '
+        'frames (any glob whose file mtimes track received frames; e.g. '
+        '/path/fast_*.jpg,/path/frame_*.jpg). Empty string (default) disables '
+        'the episode-bounded stale-frame re-arm entirely — opt-in only '
+        '(env VISION_SIDECAR_FRAMES_GLOB).',
+    )
     return parser.parse_args(argv)
 
 
@@ -549,13 +730,15 @@ def main(argv=None):
         resend_interval=args.resend_interval,
         broker_host=args.broker_host,
         broker_port=args.broker_port,
+        frames_glob=args.frames_glob,
     )
     logger.info(
-        'Starting vision-sidecar host=%s port=%s http_token=%s resend_interval=%s',
+        'Starting vision-sidecar host=%s port=%s http_token=%s resend_interval=%s frames_glob=%s',
         args.broker_host,
         args.broker_port,
         args.http_token,
         args.resend_interval,
+        args.frames_glob,
     )
     sidecar.run()
 
