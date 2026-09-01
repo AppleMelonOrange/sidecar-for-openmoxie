@@ -10,7 +10,7 @@ This is the exact minimum recipe that works.
 > here is specific to that hardware — any OpenMoxie host works.
 
 > **Using this repo's [`vision-sidecar`](..) add-on?** It **automates
-> steps 1–3** below (the config, the http‑token reply, and the two arm messages), so
+> steps 1–3** below (the config, the http‑token reply, and the arm message), so
 > with the add‑on you only do **steps 4–5** (the DNS redirect + a caption server). This
 > page explains what's happening under the hood — and lets you do the whole thing by
 > hand if you prefer. For *why* it works (the firmware detective story), see
@@ -97,14 +97,17 @@ Respond with any token (a dummy string is fine):
 ```
 (In OpenMoxie: set `_PROVIDE_HTTP_TOKENS=True` in `moxie_server.py`.)
 
-### 3. Send two "arm" messages on connect  (protobuf over `/devices/{id}/commands/zmq`, payload = `"<full_name>:<bytes>"`)
-- `embodied.logging.LoggingStateUpdate` with `upload_policy = FULL (2)`
-- `embodied.robotbrain.EnableICModule` with `run = true`
+### 3. Send ONE "arm" message on connect  (protobuf over `/devices/{id}/commands/zmq`, payload = `"<full_name>:<bytes>"`)
+- `embodied.robotbrain.EnableICModule` with `run = true` — and **nothing else**.
 
-These assert the two native gate bytes directly. With `data_sharing:"full"` in place they
-are belt‑and‑suspenders, but they were part of the confirmed‑working setup, so include them.
-Proto field numbers (from the firmware): `LoggingStateUpdate{state=1,path=2,uuid=3,timestamp=4,
-user_uuid=5,session_uuid=6,upload_policy=7,software_version=100,module_name=101}`,
+> ⚠️ **Do NOT also send `embodied.logging.LoggingStateUpdate`.** Earlier versions of
+> this recipe sent it alongside `EnableICModule`; it silently **breaks Moxie's
+> hearing** every time it is sent — see
+> [the camera‑breaks‑hearing section](#the-camera-breaks-hearing-problem-root-cause--fix)
+> below. With `data_sharing:"full"` in the config (step 1) supplying the policy,
+> `EnableICModule` alone opens the camera gate in ~17 s with zero audio impact.
+
+Proto field numbers (from the firmware):
 `EnableICModule{timestamp=1,run=2,software_version=100,module_name=101}`.
 
 ### 4. Intercept the caption endpoint (DNS + a tiny HTTPS server)
@@ -156,6 +159,43 @@ your `/api/v1/caption` and you get live descriptions of the room.
 - **Answering questions:** the frame is just an image. For "what am I holding?"‑style
   questions, send the user's actual question to your VLM against the current frame rather
   than reusing a generic caption.
+
+---
+
+## The camera-breaks-hearing problem (root cause + fix)
+
+**Symptom:** the moment vision was armed, Moxie's hearing died or lagged by
+seconds — no chest‑light blink while spoken to, no transcripts — and stayed
+broken until a sleep/wake cycle. It looked like vision and hearing "competed
+for resources." They don't. It was the arming message.
+
+**Root cause:** the original arming sequence sent TWO protos:
+`EnableICModule{run:true}` **plus** `LoggingStateUpdate{FULL}`. The
+`LoggingStateUpdate` RESTARTS the robot's logging session — and the
+microphone's streaming‑STT channel is armed on that same session. Restarting
+it kills the live audio stream (`BoAudio errored out` in the robot log): the
+ear is dead even though nothing about audio was intentionally touched.
+
+**Fix (the "polite arm," verified):** send **`EnableICModule` ALONE**. With
+`data_sharing: "full"` already in the served config (it supplies the policy)
+and the `ic_by_rb: "1"` prop set (without it the polite arm cannot open a
+closed gate), the single message opens the capture gate in ~17 s with ZERO
+audio impact. Verified live: 0 `BoAudio` crashes across the arming test, a
+45‑minute continuous conversation with 100% hearing while the camera
+streamed, and multiple sleep/wake cycles. This is what this repo's
+`vision_sidecar.py` sends today — never the 2‑proto arm.
+
+**Not the camera (separate issue):** a different ear‑degradation class —
+fragmented/garbled/absent transcripts that scale with the NUMBER of
+sleep/wake transitions since power‑on — is a firmware audio‑frontend
+partial‑initialization quirk and happens with vision fully off. Blaming the
+camera for that one cost us hours; if hearing degrades, check the
+transition count first (a power‑switch restart clears it).
+
+**Residual camera caveats (documented, hearing‑unrelated):** disarming does
+NOT stop an already‑live capture session, and the open gate survives light
+sleep. Treat the camera as ON from the first arm until a real sleep/wake or
+power cycle.
 
 ---
 *Firmware v24.10.803. Everything above is backend‑only — the robot is unmodified.*

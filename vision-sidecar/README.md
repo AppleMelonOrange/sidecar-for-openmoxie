@@ -96,7 +96,9 @@ Three cooperating pieces, all additive:
    sidecar that starts while the robot is already connected, or a robot that
    **wakes from suspend** (its MQTT session survives, no new connect line),
    would never be armed by the connect trigger alone. On either trigger it
-   publishes the two arm protos (`LoggingStateUpdate` then `EnableICModule`)
+   publishes the arm proto (`EnableICModule` **alone** — the "polite arm";
+   sending `LoggingStateUpdate` too breaks the robot's hearing, see
+   [the camera-breaks-hearing section](docs/enable-vision-step-by-step.md#the-camera-breaks-hearing-problem-root-cause--fix))
    to `/devices/{id}/commands/zmq` **once per connection** — a broker-log
    disconnect clears the flag so the next boot arms exactly once, never as a
    heartbeat (see "Arming safely"). Optionally
@@ -225,7 +227,7 @@ arm protos on a timer, which can overload the robot's audio subsystem — so don
 
 Logs to stdout:
 
-- `VISION-ARM dev=<device_id> sent 2 protos`
+- `VISION-ARM dev=<device_id> sent EnableICModule (polite arm)`
 - `VISION-HTTP-TOKEN dev=<device_id>`
 
 ### 3. Optional: user LaunchAgent

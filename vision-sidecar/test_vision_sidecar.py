@@ -81,6 +81,9 @@ class TestConnectRegex(unittest.TestCase):
 
 class TestArmProtoFraming(unittest.TestCase):
     def test_logging_state_update_frame_and_roundtrip(self):
+        # Wire-format check only. LoggingStateUpdate is NEVER sent by the arm
+        # path anymore (it kills the mic's STT stream — see send_arm_protos);
+        # the builder is kept as documentation of the old gate mechanism.
         ts = 1_740_000_000_000
         lsu = vs.build_logging_state_update(timestamp_ms=ts)
         raw = vs.frame_zmq_payload(lsu)
@@ -121,23 +124,25 @@ class TestArmDebounce(unittest.TestCase):
         msg = FakeMsg(topic, SYNTH_CONNECT_LINE)
 
         sidecar.handle_message(msg)
-        self.assertEqual(len(fake.published), 2, fake.published)
+        self.assertEqual(len(fake.published), 1, fake.published)
         sidecar.handle_message(msg)
         self.assertEqual(
             len(fake.published),
-            2,
+            1,
             'second connect within 10s must not send again; got %r' % (fake.published,),
         )
-        # Both publishes are the zmq command topic, LoggingStateUpdate then EnableICModule.
+        # The single publish is EnableICModule on the zmq command topic — the
+        # polite arm. A LoggingStateUpdate here would break the robot's hearing.
         zmq_topic = f'/devices/{SYNTH_DEVICE_ID}/commands/zmq'
         self.assertEqual(fake.published[0][0], zmq_topic)
-        self.assertEqual(fake.published[1][0], zmq_topic)
         self.assertTrue(
-            fake.published[0][1].startswith(b'embodied.logging.LoggingStateUpdate:')
+            fake.published[0][1].startswith(b'embodied.robotbrain.EnableICModule:')
         )
-        self.assertTrue(
-            fake.published[1][1].startswith(b'embodied.robotbrain.EnableICModule:')
-        )
+        for _t, payload in fake.published:
+            self.assertFalse(
+                payload.startswith(b'embodied.logging.LoggingStateUpdate:'),
+                'LoggingStateUpdate must never be published by an arm',
+            )
 
     def test_arm_after_debounce_window_sends_again(self):
         fake = FakeClient()
@@ -152,7 +157,7 @@ class TestArmDebounce(unittest.TestCase):
         sidecar.handle_message(msg)
         clock['t'] = 110.1
         sidecar.handle_message(msg)
-        self.assertEqual(len(fake.published), 4)
+        self.assertEqual(len(fake.published), 2)
 
 
 class TestHttpTokenReply(unittest.TestCase):
@@ -164,9 +169,9 @@ class TestHttpTokenReply(unittest.TestCase):
         msg = FakeMsg(event_topic, json.dumps({'ignored': True}))
         sidecar.handle_message(msg)
 
-        # Any event now also arms (2 protos) — device discovery for an
-        # already-connected robot. The http_token reply must be present and
-        # byte-correct among the publishes.
+        # Any event now also arms (1 proto, the polite arm) — device discovery
+        # for an already-connected robot. The http_token reply must be present
+        # and byte-correct among the publishes.
         token_pubs = [
             (t, p) for (t, p) in fake.published
             if t == f'/devices/{SYNTH_DEVICE_ID}/commands/http_token'
@@ -176,12 +181,12 @@ class TestHttpTokenReply(unittest.TestCase):
         expected = json.dumps({'command': 'http_token', 'http_token': 'notoken'})
         self.assertEqual(payload, expected)
         self.assertIsInstance(payload, str)
-        # Exactly the two arm protos accompany it (arm-on-event discovery).
+        # Exactly one arm proto accompanies it (arm-on-event discovery).
         arm_pubs = [
             (t, p) for (t, p) in fake.published
             if t == f'/devices/{SYNTH_DEVICE_ID}/commands/zmq'
         ]
-        self.assertEqual(len(arm_pubs), 2, fake.published)
+        self.assertEqual(len(arm_pubs), 1, fake.published)
 
     def test_http_token_disabled_still_arms_but_sends_no_token(self):
         # http-token OFF: an event must NOT publish a token, but MUST still
@@ -193,7 +198,7 @@ class TestHttpTokenReply(unittest.TestCase):
         topics = [t for (t, _p) in fake.published]
         self.assertNotIn(f'/devices/{SYNTH_DEVICE_ID}/commands/http_token', topics)
         self.assertEqual(
-            topics.count(f'/devices/{SYNTH_DEVICE_ID}/commands/zmq'), 2, fake.published)
+            topics.count(f'/devices/{SYNTH_DEVICE_ID}/commands/zmq'), 1, fake.published)
 
     def test_http_token_debounce_is_independent_of_arm(self):
         fake = FakeClient()
@@ -205,17 +210,17 @@ class TestHttpTokenReply(unittest.TestCase):
             time_fn=lambda: clock['t'],
         )
         sidecar.handle_message(FakeMsg('$SYS/broker/log/N', SYNTH_CONNECT_LINE))
-        self.assertEqual(len(fake.published), 2)  # best-effort connect arm (unlatched)
+        self.assertEqual(len(fake.published), 1)  # best-effort connect arm (unlatched)
         sidecar.handle_message(
             FakeMsg(
                 f'/devices/{SYNTH_DEVICE_ID}/events/client-service-http-token',
                 '{}',
             )
         )
-        # First event after the connect: the LATCHING arm (2, ignores the
+        # First event after the connect: the LATCHING arm (1 proto, ignores the
         # connect arm's debounce — boot sequence) + the http-token reply.
-        self.assertEqual(len(fake.published), 5)
-        topic, payload = fake.published[4]
+        self.assertEqual(len(fake.published), 3)
+        topic, payload = fake.published[2]
         self.assertEqual(topic, f'/devices/{SYNTH_DEVICE_ID}/commands/http_token')
         self.assertEqual(
             payload, json.dumps({'command': 'http_token', 'http_token': 'notoken'})
@@ -223,10 +228,11 @@ class TestHttpTokenReply(unittest.TestCase):
 
     def test_events_arm_once_per_connection_epoch(self):
         """2026-08-28 incident regression: events must NEVER become an arm
-        heartbeat. First event from an unarmed device arms (2 protos);
+        heartbeat. First event from an unarmed device arms (1 proto);
         subsequent events arm NOTHING, even far outside the 10s debounce —
-        the repeated LoggingStateUpdate(STOP)+EnableICModule at ~10s cadence
-        crash-looped the robot's XMOS audio and caused watchdog reboots.
+        the repeated arm at ~10s cadence (which then still carried
+        LoggingStateUpdate) crash-looped the robot's XMOS audio and caused
+        watchdog reboots.
         A disconnect line clears the flag so the NEXT connection arms once."""
         fake = FakeClient()
         clock = {'t': 100.0}
@@ -236,17 +242,17 @@ class TestHttpTokenReply(unittest.TestCase):
         )
         evt = f'/devices/{SYNTH_DEVICE_ID}/events/whatever'
         sidecar.handle_message(FakeMsg(evt, '{}'))
-        self.assertEqual(len(fake.published), 2)  # armed once
+        self.assertEqual(len(fake.published), 1)  # armed once
         for step in (30.0, 120.0, 3600.0):  # far beyond any debounce
             clock['t'] = 100.0 + step
             sidecar.handle_message(FakeMsg(evt, '{}'))
-        self.assertEqual(len(fake.published), 2)  # STILL exactly one arm
+        self.assertEqual(len(fake.published), 1)  # STILL exactly one arm
         # disconnect -> flag cleared -> next event arms exactly once again
         disc = f'Client {SYNTH_DEVICE_ID} closed its connection'
         sidecar.handle_message(FakeMsg('$SYS/broker/log/N', disc))
         clock['t'] = 4000.0
         sidecar.handle_message(FakeMsg(evt, '{}'))
-        self.assertEqual(len(fake.published), 4)
+        self.assertEqual(len(fake.published), 2)
 
     def test_wake_transition_rearms_once(self):
         """Sleep closes the capture gate (2026-08-28 live: blind after nap).
@@ -263,14 +269,14 @@ class TestHttpTokenReply(unittest.TestCase):
         )
         zmq_topic = f'/devices/{SYNTH_DEVICE_ID}/events/zmq'
         # first frame: RUNNING — discovery arm fires (unarmed device), but
-        # NO wake arm (prev unknown): exactly 2 protos
+        # NO wake arm (prev unknown): exactly 1 proto
         sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
-        self.assertEqual(len(fake.published), 2)
+        self.assertEqual(len(fake.published), 1)
         # robot goes to sleep: no arm
         clock['t'] = 200.0
         sidecar.handle_message(FakeMsg(zmq_topic, ps(5)))
-        self.assertEqual(len(fake.published), 2)
-        # WAKE: SUSPEND -> RUNNING => best-effort arm now (2 protos) and
+        self.assertEqual(len(fake.published), 1)
+        # WAKE: SUSPEND -> RUNNING => best-effort arm now (1 proto) and
         # the device is UNLATCHED — the discovery check already ran for
         # this message, so the latching arm fires on the NEXT event, when
         # the vision subsystem has had strictly more time to come up.
@@ -278,18 +284,18 @@ class TestHttpTokenReply(unittest.TestCase):
         # too early — gate never opened; the event-timed arm opened it.)
         clock['t'] = 300.0
         sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
-        self.assertEqual(len(fake.published), 4)
-        # next event after wake: the LATCHING discovery arm (+2)
+        self.assertEqual(len(fake.published), 2)
+        # next event after wake: the LATCHING discovery arm (+1)
         clock['t'] = 400.0
         sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
-        self.assertEqual(len(fake.published), 6)
+        self.assertEqual(len(fake.published), 3)
         # steady RUNNING frames after that: nothing further
         clock['t'] = 500.0
         sidecar.handle_message(FakeMsg(zmq_topic, ps(3)))
-        self.assertEqual(len(fake.published), 6)
+        self.assertEqual(len(fake.published), 3)
         # parser: non-powerstate zmq payload is ignored quietly
         sidecar.handle_message(FakeMsg(zmq_topic, b'embodied.other.ThingPB:\x08\x01'))
-        self.assertEqual(len(fake.published), 6)
+        self.assertEqual(len(fake.published), 3)
 
 
 class TestMergeVisionConfig(unittest.TestCase):
@@ -391,7 +397,7 @@ class TestStaleFrameRearm(unittest.TestCase):
         """THE BOUND: 100 ticks, always-stale, hours between ticks → exactly 2 arms.
 
         Always-stale age of 999999, fake clock +3600s per tick, device RUNNING.
-        Exactly 4 raw zmq publishes (2 protos × 2 arms), exactly one
+        Exactly 2 raw zmq publishes (1 proto × 2 arms), exactly one
         VISION-STALE-GIVEUP, and nothing further across the remaining ticks.
         A long-elapsed clock alone must NEVER reset the episode.
         """
@@ -406,8 +412,8 @@ class TestStaleFrameRearm(unittest.TestCase):
 
         self.assertEqual(
             _zmq_count(fake),
-            4,
-            'expected exactly 2 arms (4 zmq publishes) over 100 stale hours; got %r'
+            2,
+            'expected exactly 2 arms (2 zmq publishes) over 100 stale hours; got %r'
             % (fake.published,),
         )
         giveups = [
@@ -429,7 +435,7 @@ class TestStaleFrameRearm(unittest.TestCase):
         Sub-case: after 2 arms, a tick with huge elapsed time but age STILL
         stale must not reset and must not send a 3rd arm. Then one recovery
         tick (age=10) resets arms to 0. Then stall again → exactly 2 more
-        arms (4 more publishes), proving the reset re-enabled the bound.
+        arms (2 more publishes), proving the reset re-enabled the bound.
         """
         clock = {'t': 0.0}
         age = {'v': 999999}
@@ -439,7 +445,7 @@ class TestStaleFrameRearm(unittest.TestCase):
         sidecar._stale_check_tick()          # arm 1
         clock['t'] += 3600.0
         sidecar._stale_check_tick()          # arm 2
-        self.assertEqual(_zmq_count(fake), 4)
+        self.assertEqual(_zmq_count(fake), 2)
         self.assertEqual(sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'], 2)
 
         # Huge elapsed time, still stale: must NOT reset, must NOT send a 3rd arm.
@@ -447,7 +453,7 @@ class TestStaleFrameRearm(unittest.TestCase):
         sidecar._stale_check_tick()
         self.assertEqual(
             _zmq_count(fake),
-            4,
+            2,
             'elapsed wall-clock alone must not send a 3rd arm; got %r' % (fake.published,),
         )
         self.assertEqual(
@@ -461,14 +467,14 @@ class TestStaleFrameRearm(unittest.TestCase):
         sidecar._stale_check_tick()
         self.assertEqual(sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'], 0)
         self.assertFalse(sidecar._stale_episodes[SYNTH_DEVICE_ID]['gave_up_logged'])
-        self.assertEqual(_zmq_count(fake), 4, 'recovery tick must send nothing')
+        self.assertEqual(_zmq_count(fake), 2, 'recovery tick must send nothing')
 
         # Stall again: bound re-enabled, exactly 2 more arms.
         age['v'] = 999999
         sidecar._stale_check_tick()          # arm 1 of new episode
         clock['t'] += 3600.0
         sidecar._stale_check_tick()          # arm 2 of new episode
-        self.assertEqual(_zmq_count(fake), 8)
+        self.assertEqual(_zmq_count(fake), 4)
         self.assertEqual(sidecar._stale_episodes[SYNTH_DEVICE_ID]['arms'], 2)
 
     def test_frames_flowing_sends_nothing(self):
@@ -508,7 +514,7 @@ class TestStaleFrameRearm(unittest.TestCase):
             clock['t'] += 3600.0
         self.assertEqual(
             _zmq_count(fake),
-            4,
+            2,
             'after RUNNING flip, still exactly 2 arms; got %r' % (fake.published,),
         )
 

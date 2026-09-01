@@ -16,9 +16,14 @@ evidence.
    `gcp_upload_disable:"0"`.
 2. **HTTP‑token reply:** answer the robot's `client-service-http-token` MQTT event with
    `{command:"http_token", http_token:"notoken"}` (`_PROVIDE_HTTP_TOKENS=True`).
-3. **Arm messages on connect** (protobuf over `/devices/{id}/commands/zmq`, `"full_name:bytes"`):
-   `embodied.logging.LoggingStateUpdate{upload_policy=FULL(2)}`,
-   `embodied.robotbrain.EnableICModule{run=true}`.
+3. **Arm message on connect** (protobuf over `/devices/{id}/commands/zmq`, `"full_name:bytes"`):
+   `embodied.robotbrain.EnableICModule{run=true}` — **alone**. The originally
+   published recipe also sent `embodied.logging.LoggingStateUpdate{upload_policy=FULL(2)}`;
+   that message restarts the robot's logging session, which the microphone's
+   streaming‑STT channel rides on, so every arm silently broke Moxie's hearing.
+   With `data_sharing:"full"` supplying the policy, `EnableICModule` alone opens the
+   gate. See "The camera‑breaks‑hearing problem" in
+   [enable-vision-step-by-step.md](enable-vision-step-by-step.md).
 4. **DNS redirect** `production-ic-worker.embodied.com`, `staging-ic-worker.embodied.com`,
    `client-service-api.embodied.com` → your server.
 5. **Caption server** on :443 answering `POST /api/v1/caption` (multipart JPEG in; caption JSON
@@ -125,12 +130,13 @@ intercept.
 
 ## 6. Success (log evidence)
 
-On connect the backend logs the two arm messages, then real frames arrive with the hardcoded key
+On connect the backend logs the arm messages (this capture predates the drop of
+`LoggingStateUpdate` — see §0 step 3), then real frames arrive with the hardcoded key
 (varying sizes = a real camera, not a fixed test image):
 
 ```
-INFO Opening image-captioning gate (LoggingStateUpdate) for d_b7a5…
-INFO Enabling IC module (EnableICModule run=True) for d_b7a5…
+INFO Opening image-captioning gate (LoggingStateUpdate) for d_xxxx…
+INFO Enabling IC module (EnableICModule run=True) for d_xxxx…
 POST /api/v1/caption (27497B) ctype=multipart/form-data auth=Bearer <hardcoded-key>...
 POST /api/v1/caption (28547B) ... (≈1/sec, 22–30 KB each)
   -> caption: I see a person with glasses and a white shirt, sitting at a desk with a computer

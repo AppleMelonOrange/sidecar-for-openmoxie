@@ -9,8 +9,13 @@ firmware already ships the camera/caption path; it stays shut until:
 1. HiveConfiguration serves data_sharing="full" plus three IC props
    (see apply_vision_config.py — that is the DB-row substitute for editing
    DEFAULT_ROBOT_CONFIG / DEFAULT_ROBOT_SETTINGS in robot_data.py).
-2. On robot MQTT connect, two ZMQ arm protos are published:
-   LoggingStateUpdate{state=2, upload_policy=2} then EnableICModule{run=True}.
+2. On robot MQTT connect, ONE ZMQ arm proto is published:
+   EnableICModule{run=True} — the "polite arm". Earlier versions also sent
+   LoggingStateUpdate{state=2, upload_policy=2}; that message restarts the
+   robot's logging session, which the microphone's streaming-STT channel is
+   armed on, so every arm silently broke Moxie's hearing. See
+   send_arm_protos and docs/enable-vision-step-by-step.md
+   ("The camera-breaks-hearing problem").
 3. Optionally, the robot's client-service-http-token event is answered with
    a dummy JSON http_token command. Whether (3) is load-bearing is an OPEN
    QUESTION this sidecar exists to test; default is ON to match the working
@@ -169,6 +174,12 @@ def build_logging_state_update(timestamp_ms=None):
     Both enums set to 2 because firmware OnLoggingStateChanged gates on whichever
     enum lands at native offset 0x2c (state or upload_policy). 2 == STOP / FULL.
     See moxie_server.send_logging_state_full.
+
+    ★ NO LONGER SENT by send_arm_protos. LoggingStateUpdate restarts the
+    robot's logging session — the same session the microphone's streaming-STT
+    channel is armed on — so sending it kills live hearing ("BoAudio errored
+    out"). Kept only for the wire-format test and as documentation of the
+    old gate mechanism. Do not wire it back into any arm path.
     """
     lsu = LoggingStateUpdate()
     lsu.state = 2
@@ -319,7 +330,7 @@ class VisionSidecar:
     # ----- publish helpers (the only place that talks to the client) -----
 
     def send_arm_protos(self, device_id, ignore_debounce=False, latch=True):
-        """Publish LoggingStateUpdate then EnableICModule. Returns True if sent.
+        """Publish EnableICModule (the "polite arm"). Returns True if sent.
 
         Debounce is per-device, 10s, skipped when ignore_debounce=True.
         latch=False sends the protos but does NOT mark the device armed —
@@ -338,15 +349,21 @@ class VisionSidecar:
                 logger.info('VISION-ARM debounce skip dev=%s', device_id)
                 return False
         ts = now_ms()
-        lsu = build_logging_state_update(timestamp_ms=ts)
+        # POLITE ARM (live-verified 2026-08-31): EnableICModule ALONE. The old
+        # LoggingStateUpdate{FULL} restarted the robot's logging session, which
+        # the mic's zmqSTT stream is armed on -> "BoAudio errored out" -> the
+        # ear went deaf on every arm. data_sharing:"full" in the served device
+        # config already supplies the policy byte, so this single message opens
+        # the camera with zero audio damage. Verified live: 0 BoAudio crashes,
+        # 45-min continuous conversation with 100% hearing while streaming.
+        # NEVER re-add the LoggingStateUpdate publish here.
         eic = build_enable_ic_module(run=True, timestamp_ms=ts)
         topic = zmq_command_topic(device_id)
-        self._client.publish(topic, payload=frame_zmq_payload(lsu))
         self._client.publish(topic, payload=frame_zmq_payload(eic))
         self._arm_last[device_id] = now
         if latch:
             self._armed_devices.add(device_id)
-        logger.info('VISION-ARM dev=%s sent 2 protos%s', device_id,
+        logger.info('VISION-ARM dev=%s sent EnableICModule (polite arm)%s', device_id,
                     '' if latch else ' (best-effort, unlatched)')
         return True
 
@@ -448,7 +465,7 @@ class VisionSidecar:
         # only if we have not already armed it this connection epoch.
         # ★ 2026-08-28 INCIDENT: the first version armed on every event with
         # only the 10s debounce, i.e. a re-arm every ~10s forever. Each arm
-        # carries LoggingStateUpdate(state=STOP)+EnableICModule; at that
+        # then carried LoggingStateUpdate(state=STOP)+EnableICModule; at that
         # cadence it crash-looped the robot's XMOS audio subsystem ("Audio
         # startup" every ~10s) and the watchdog escalated to FULL SYSTEM
         # REBOOTS (boot logo). Arming must be an event (once per
