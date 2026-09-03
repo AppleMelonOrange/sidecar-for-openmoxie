@@ -101,6 +101,11 @@ POWER_RUNNING = 3
 # timer alone. File-stat polling on a timer is fine (that's just reading
 # a file); messages sent to the robot are strictly event-driven.
 STALE_AFTER_S = 120
+# Seconds to wait after a /devices/{id}/config push before re-arming. The
+# robot re-applies the pushed config and closes the capture gate ~10 s later
+# (public issue #3, reporter's timeline: config :11 -> last frame :22); an
+# immediate re-arm lands BEFORE the close and is wiped out. 20 s clears it.
+CONFIG_REARM_DELAY_S = 20
 SECOND_ARM_AFTER_S = 300
 CHECK_PERIOD_S = 30
 
@@ -310,6 +315,7 @@ class VisionSidecar:
         # re-arm. Event, not heartbeat.
         self._power_state = {}
         self._tried_unknown_user = False
+        self._config_timers = {}  # device_id -> threading.Timer (one per device)
         self._stop = threading.Event()
         # Stale-frame re-arm is opt-in: empty frames_glob means the feature
         # is OFF (no thread, behavior identical to before this existed).
@@ -398,6 +404,11 @@ class VisionSidecar:
                 # on first event (debounced) discovers already-connected robots
                 # and seeds the resend set. (2026-08-28 fix.)
                 client.subscribe('/devices/+/events/#')
+                # OpenMoxie re-sends /devices/{id}/config on every web-server
+                # restart and on every admin config save; the robot closes the
+                # capture gate ~10 s later while its MQTT session stays up, so
+                # neither the connect nor the wake trigger fires. Issue #3.
+                client.subscribe('/devices/+/config')
                 return
             logger.error(
                 'MQTT connect failed rc=%s. If not-authorized, the broker ACL '
@@ -441,6 +452,51 @@ class VisionSidecar:
             device_id = dec[2]
             eventname = dec[4]
             self._on_device_event(device_id, eventname, msg)
+            return
+        if len(dec) == 4 and dec[1] == 'devices' and dec[3] == 'config':
+            self._on_config_push(dec[2])
+
+    def _on_config_push(self, device_id):
+        """Server pushed /devices/{id}/config (restart or admin re-push).
+
+        The robot applies it ~10 s later and closes the capture gate while its
+        MQTT session stays up, so neither the connect nor the wake trigger
+        fires. Schedule ONE delayed best-effort arm + unlatch; the next
+        perception event sends the arm that latches. Only for devices already
+        armed this epoch (a cold-boot config push before any event is left to
+        the normal connect/first-event path). One timer per device; a newer
+        push replaces a pending one. This is an EVENT trigger (config pushes
+        never happen on a timer) — max 2 arms per push, never a heartbeat.
+        Contributed in public issue #3 (jshumfleet-collab), live-verified there
+        and on the maintainer's robot (2026-09-03: 9 restarts, camera restored
+        every time, hearing identical to a no-patch control).
+        """
+        if not (device_id and device_id.startswith('d_')):
+            return
+        if device_id not in self._armed_devices:
+            return
+        delay = CONFIG_REARM_DELAY_S
+        logger.info('VISION-CONFIG-PUSH dev=%s; scheduling re-arm in %ss', device_id, delay)
+        old_timer = self._config_timers.pop(device_id, None)
+        if old_timer is not None:
+            old_timer.cancel()
+        t = threading.Timer(delay, self._config_rearm, args=(device_id,))
+        t.daemon = True
+        self._config_timers[device_id] = t
+        t.start()
+
+    def _config_rearm(self, device_id):
+        try:
+            self._config_timers.pop(device_id, None)
+            state = self._power_state.get(device_id)
+            if state is not None and state != POWER_RUNNING:
+                logger.info('VISION-CONFIG-REARM dev=%s skipped (power state %s, not RUNNING)', device_id, state)
+                return
+            logger.info('VISION-CONFIG-REARM dev=%s; best-effort arm + unlatch for event re-arm', device_id)
+            self.send_arm_protos(device_id, ignore_debounce=True, latch=False)
+            self._armed_devices.discard(device_id)
+        except Exception:
+            logger.exception('config re-arm failed (ignored)')
 
     def _on_sys_log(self, msg):
         line = _payload_text(msg.payload)

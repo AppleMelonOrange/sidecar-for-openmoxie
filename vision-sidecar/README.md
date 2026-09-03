@@ -221,7 +221,17 @@ events, never a heartbeat. There are three triggers, each firing **at most once*
    best-effort arm at the transition, then the latching arm on the **next perception
    event** (so it never arms until the subsystem is provably listening).
 
-Together these cover boot, already-connected, and wake-from-nap. A broker-log disconnect
+4. **Config push** — OpenMoxie re-sends `/devices/{id}/config` on every web-server
+   restart and every admin config save; some robots close the capture gate ~10 s after
+   applying it, with the MQTT session untouched (so none of the above fire). The sidecar
+   waits 20 s after a push, sends a best-effort arm, and lets the next perception event
+   send the latching arm — 2 arms max per push, and only for a device already armed.
+   (Contributed in issue #3; verified on the maintainer's robot across 9 restarts.)
+   Note: a web-server restart while Moxie is awake makes her *hearing* unreliable for
+   the first 1–1.5 minutes regardless of the sidecar — that's stock OpenMoxie behaviour,
+   not something this add-on changes.
+
+Together these cover boot, already-connected, wake-from-nap, and server restart. A broker-log disconnect
 resets the state for the next connection. Setting `--resend-interval > 0` re-sends the
 arm protos on a timer, which can overload the robot's audio subsystem — so don't.
 
@@ -229,6 +239,8 @@ Logs to stdout:
 
 - `VISION-ARM dev=<device_id> sent EnableICModule (polite arm)`
 - `VISION-HTTP-TOKEN dev=<device_id>`
+- `VISION-CONFIG-PUSH dev=<device_id>; scheduling re-arm in 20s` then
+  `VISION-CONFIG-REARM dev=<device_id>; best-effort arm + unlatch for event re-arm`
 
 ### 3. Optional: user LaunchAgent
 

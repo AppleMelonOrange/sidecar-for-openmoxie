@@ -577,5 +577,43 @@ class TestStaleFrameRearm(unittest.TestCase):
             sidecar._stale_check_thread.join(timeout=1.0)
 
 
+class TestConfigPushRearm(unittest.TestCase):
+    """Issue #3: a /devices/{id}/config push (server restart / admin save)
+    must schedule ONE delayed best-effort arm, unlatch, and let the next
+    perception event send the latching arm — never more than 2 arms per push."""
+
+    def _zmq_arms(self, fake):
+        return [t for t, _ in fake.published if t.endswith('/commands/zmq')]
+
+    def test_config_push_rearms_after_delay_then_latches_once(self):
+        fake = FakeClient()
+        sidecar = vs.VisionSidecar(client=fake, http_token_enabled=False, debounce_s=0.0)
+        dev = 'd_test-config'
+        old_delay = vs.CONFIG_REARM_DELAY_S
+        vs.CONFIG_REARM_DELAY_S = 0.2
+        try:
+            sidecar.handle_message(FakeMsg(f'/devices/{dev}/events/perception', '{}'))
+            self.assertEqual(len(self._zmq_arms(fake)), 1)          # first-event latch
+            sidecar.handle_message(FakeMsg(f'/devices/{dev}/config', '{}'))
+            sidecar.handle_message(FakeMsg(f'/devices/{dev}/events/perception', '{}'))
+            self.assertEqual(len(self._zmq_arms(fake)), 1)          # nothing before the delay
+            sidecar._config_timers[dev].join(timeout=2.0)
+            self.assertEqual(len(self._zmq_arms(fake)), 2)          # delayed best-effort arm
+            self.assertNotIn(dev, sidecar._armed_devices)           # unlatched
+            sidecar.handle_message(FakeMsg(f'/devices/{dev}/events/perception', '{}'))
+            self.assertEqual(len(self._zmq_arms(fake)), 3)          # next event latches
+            sidecar.handle_message(FakeMsg(f'/devices/{dev}/events/perception', '{}'))
+            self.assertEqual(len(self._zmq_arms(fake)), 3)          # and no more
+        finally:
+            vs.CONFIG_REARM_DELAY_S = old_delay
+
+    def test_config_push_for_unarmed_device_is_ignored(self):
+        fake = FakeClient()
+        sidecar = vs.VisionSidecar(client=fake, http_token_enabled=False, debounce_s=0.0)
+        sidecar.handle_message(FakeMsg('/devices/d_never-armed/config', '{}'))
+        self.assertEqual(sidecar._config_timers, {})
+        self.assertEqual(self._zmq_arms(fake), [])
+
+
 if __name__ == '__main__':
     unittest.main()
