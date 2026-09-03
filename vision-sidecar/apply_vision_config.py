@@ -156,9 +156,11 @@ def main(argv=None):
     if site_dir not in sys.path:
         sys.path.insert(0, site_dir)
 
-    # Mirror site/load_see.py lines 17-19 exactly (after putting site/ on sys.path,
-    # because this file lives outside site/).
-    import django, os
+    # Mirror site/load_see.py lines 17-19 (after putting site/ on sys.path,
+    # because this file lives outside site/). `os` must NOT be re-imported
+    # here: a local import makes `os` function-local for the whole body, so
+    # the os.path.abspath() above raises UnboundLocalError (issue #2).
+    import django
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'openmoxie.settings')
     django.setup()
 
