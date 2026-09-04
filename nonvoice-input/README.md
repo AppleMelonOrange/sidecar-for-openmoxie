@@ -30,7 +30,8 @@ the mechanism works for any event source.
 
 ### Demo 1 — injecting Moxie's reply (scripted lines)
 
-📹 [`media/nonvoice_input_demo_take7.mov`](media/nonvoice_input_demo_take7.mov) (≈1 min)
+https://github.com/user-attachments/assets/c93d6386-af0b-4014-9f40-c8d152afd2ca
+
 · script: [`media/nonvoice_input_demo_script.md`](media/nonvoice_input_demo_script.md)
 
 The app decides the exact words and the mood; Moxie speaks them with a matching face.
@@ -66,7 +67,8 @@ Mac: "Moxie, what should I practice next?"
 
 ### Demo 2 — injecting a chat turn (Moxie's own words)
 
-📹 [`media/nonvoice_input_lamp_demo.mov`](media/nonvoice_input_lamp_demo.mov)
+https://github.com/user-attachments/assets/5da2d783-5690-49b2-9d37-108b0116fc6b
+
 · script: [`media/nonvoice_input_lamp_demo_script.md`](media/nonvoice_input_lamp_demo_script.md)
 
 Here the app does not write Moxie's line. During a piano session a **Home Assistant**
