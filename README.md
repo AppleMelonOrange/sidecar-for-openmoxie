@@ -13,6 +13,7 @@ owner's own hardware, privacy-first. No forks. No firmware modification.
 | Add-on | What it does | Status |
 |---|---|---|
 | [**vision-sidecar**](vision-sidecar/) | Opens Moxie's already-shipped camera / image-captioning gate so it can describe what it sees | ✅ proven live |
+| [**nonvoice-input**](nonvoice-input/) | **Non-voice input → Moxie reacts**: any app/game/sensor event makes Moxie speak with an expression within ~1 s, mic still open for you (piano-practice app as the example) — findings + demo video | ✅ feasibility proven live |
 | caption-server *(planned)* | Answers the robot's caption POSTs with a local vision model | — |
 | tts-voice *(planned)* | A custom local voice via the firmware's CloudTTS path | — |
 | multi-speaker *(planned)* | Attend to more than one person; voice ↔ face | — |
